@@ -1,0 +1,54 @@
+name: AAAA NEW LADYBIRD BUILD
+
+"on": [workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Install system packages
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            autoconf autoconf-archive automake build-essential ccache cmake curl \
+            fonts-liberation2 git libdrm-dev libgl1-mesa-dev libtool nasm \
+            ninja-build pkg-config python3-venv qt6-base-dev qt6-tools-dev-tools \
+            qt6-wayland tar unzip zip libpulse-dev wget
+
+      - name: Install clang 21
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 21
+          sudo apt install -y clang-21 lld-21
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Download official Ladybird source
+        run: |
+          git clone --depth 1 https://github.com/LadybirdBrowser/ladybird.git ladybird
+
+      - name: Build Ladybird
+        working-directory: ladybird
+        run: |
+          CC=clang-21 CXX=clang++-21 BUILD_PRESET=Release ./Meta/ladybird.py build --gui=Qt
+
+      - name: Pack Ladybird
+        run: |
+          tar -czf ladybird-linux-build.tar.gz -C ladybird Build/release
+
+      - name: Upload Ladybird artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ladybird-linux-build
+          path: ladybird-linux-build.tar.gz
