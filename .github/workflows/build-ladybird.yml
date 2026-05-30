@@ -1,7 +1,14 @@
 name: Build Ladybird Linux
 
-on:
+"on":
   workflow_dispatch:
+  push:
+    branches:
+      - master
+      - main
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -16,22 +23,20 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y \
-            autoconf autoconf-archive automake build-essential ccache cmake curl \
-            fonts-liberation2 git libdrm-dev libgl1-mesa-dev libtool nasm \
-            ninja-build pkg-config python3-venv qt6-base-dev qt6-tools-dev-tools \
-            qt6-wayland tar unzip zip libpulse-dev clang lld
+          sudo apt install -y autoconf autoconf-archive automake build-essential ccache cmake curl fonts-liberation2 git libdrm-dev libgl1-mesa-dev libtool nasm ninja-build pkg-config python3-venv qt6-base-dev qt6-tools-dev-tools qt6-wayland tar unzip zip libpulse-dev clang lld
 
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Configure Ladybird
+        run: |
+          cmake --preset Release -DLADYBIRD_GUI_FRAMEWORK=Qt -DLAGOM_LINK_POOL_SIZE=1
 
       - name: Build Ladybird
         run: |
-          export CMAKE_BUILD_PARALLEL_LEVEL=2
-          cmake --preset Release -DLADYBIRD_GUI_FRAMEWORK=Qt -DLAGOM_LINK_POOL_SIZE=1
-          cmake --build Build/release
+          CMAKE_BUILD_PARALLEL_LEVEL=2 cmake --build Build/release
 
       - name: Pack build
         run: |
