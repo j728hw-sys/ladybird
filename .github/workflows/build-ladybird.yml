@@ -1,1 +1,44 @@
+name: Build Ladybird Linux
 
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout Ladybird
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            autoconf autoconf-archive automake build-essential ccache cmake curl \
+            fonts-liberation2 git libdrm-dev libgl1-mesa-dev libtool nasm \
+            ninja-build pkg-config python3-venv qt6-base-dev qt6-tools-dev-tools \
+            qt6-wayland tar unzip zip libpulse-dev clang lld
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Build Ladybird
+        run: |
+          export CMAKE_BUILD_PARALLEL_LEVEL=2
+          cmake --preset Release -DLADYBIRD_GUI_FRAMEWORK=Qt -DLAGOM_LINK_POOL_SIZE=1
+          cmake --build Build/release
+
+      - name: Pack build
+        run: |
+          tar -czf ladybird-linux-build.tar.gz Build/release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ladybird-linux-build
+          path: ladybird-linux-build.tar.gz
