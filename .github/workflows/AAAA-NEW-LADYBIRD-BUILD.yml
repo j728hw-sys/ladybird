@@ -1,9 +1,10 @@
-name: AAAA NEW LADYBIRD BUILD
+name: AAAA NEW LADYBIRD BUILD G5400 CACHED
 
 "on": [workflow_dispatch]
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
@@ -11,6 +12,10 @@ jobs:
 
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}/ladybird
+      CCACHE_COMPILERCHECK: content
+      CCACHE_NOHASHDIR: "true"
 
     steps:
       - name: Install system packages
@@ -37,18 +42,77 @@ jobs:
       - name: Download official Ladybird source
         run: |
           git clone --depth 1 https://github.com/LadybirdBrowser/ladybird.git ladybird
+          cd ladybird
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        id: ladybird_rev
 
-      - name: Build Ladybird
+      - name: Restore build caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ccache
+            ladybird/Build/caches
+            ladybird/Build/vcpkg
+          key: ${{ runner.os }}-ladybird-g5400-x86-64-v2-${{ steps.ladybird_rev.outputs.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ladybird-g5400-x86-64-v2-
+
+      - name: Prepare ccache wrappers
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.ccache-wrappers"
+          ln -sf /usr/bin/ccache "$GITHUB_WORKSPACE/.ccache-wrappers/clang-21"
+          ln -sf /usr/bin/ccache "$GITHUB_WORKSPACE/.ccache-wrappers/clang++-21"
+          ccache -M 4G
+          ccache -z
+          echo "$GITHUB_WORKSPACE/.ccache-wrappers" >> "$GITHUB_PATH"
+
+      - name: Patch CPU target for Pentium G5400
         working-directory: ladybird
         run: |
-          CC=clang-21 CXX=clang++-21 BUILD_PRESET=Release ./Meta/ladybird.py build --gui=Qt
+          python3 - <<'PY'
+          from pathlib import Path
+
+          patches = [
+              Path("Meta/CMake/common_compile_options.cmake"),
+          ]
+
+          for p in patches:
+              s = p.read_text()
+              s = s.replace("-march=native", "-march=x86-64-v2")
+              s = s.replace("-march=x86-64-v3", "-march=x86-64-v2")
+              s = s.replace("-mtune=native", "-mtune=generic")
+              p.write_text(s)
+
+          print("Patched Ladybird CPU target: x86-64-v2 / mtune=generic")
+          PY
+
+          grep -R "march=x86-64" Meta/CMake/common_compile_options.cmake || true
+          grep -R "march=native" Meta/CMake/common_compile_options.cmake && exit 1 || true
+          grep -R "march=x86-64-v3" Meta/CMake/common_compile_options.cmake && exit 1 || true
+
+      - name: Build Ladybird for Pentium G5400
+        working-directory: ladybird
+        run: |
+          export PATH="$GITHUB_WORKSPACE/.ccache-wrappers:$PATH"
+
+          CC=clang-21 \
+          CXX=clang++-21 \
+          CFLAGS="-march=x86-64-v2 -mtune=generic" \
+          CXXFLAGS="-march=x86-64-v2 -mtune=generic" \
+          BUILD_PRESET=Release \
+          ./Meta/ladybird.py build --gui=Qt
+
+      - name: Show ccache stats
+        if: always()
+        run: |
+          ccache -s || true
 
       - name: Pack Ladybird
         run: |
-          tar -czf ladybird-linux-build.tar.gz -C ladybird Build/release
+          tar -czf ladybird-linux-build-g5400.tar.gz -C ladybird Build/release
 
       - name: Upload Ladybird artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ladybird-linux-build
-          path: ladybird-linux-build.tar.gz
+          name: ladybird-linux-build-g5400
+          path: ladybird-linux-build-g5400.tar.gz
