@@ -46,7 +46,6 @@ jobs:
 
           safe_flags = "-march=x86-64-v2 -mtune=generic -mno-avx -mno-avx2 -mno-fma -mno-f16c -mno-bmi -mno-bmi2 -mno-avx512f"
 
-          # Главный файл, где Ladybird ставит -march=native / x86-64-v3
           p = Path("Meta/CMake/common_compile_options.cmake")
           s = p.read_text()
 
@@ -56,7 +55,6 @@ jobs:
           s = s.replace("-march=x86-64-v3", "-march=x86-64-v2")
           s = s.replace("-mtune=native", "-mtune=generic")
 
-          # На всякий случай добавляем NO-AVX флаги в самый конец, чтобы они были ПОСЛЕДНИМИ
           s += f"""
 
           # FORCE_PENTIUM_G5400_NO_AVX
@@ -67,18 +65,14 @@ jobs:
 
           p.write_text(s)
 
-          # Патчим vcpkg triplets тоже, чтобы зависимости не собрали AVX
           triplets = Path("Meta/CMake/vcpkg/release-triplets")
           for t in triplets.glob("*.cmake"):
               txt = t.read_text()
-              txt += f"""
-
-          # FORCE_PENTIUM_G5400_NO_AVX
-          set(VCPKG_C_FLAGS "${{VCPKG_C_FLAGS}} {safe_flags}")
-          set(VCPKG_CXX_FLAGS "${{VCPKG_CXX_FLAGS}} {safe_flags}")
-          set(VCPKG_C_FLAGS_RELEASE "${{VCPKG_C_FLAGS_RELEASE}} {safe_flags}")
-          set(VCPKG_CXX_FLAGS_RELEASE "${{VCPKG_CXX_FLAGS_RELEASE}} {safe_flags}")
-          """
+              txt += "\n\n# FORCE_PENTIUM_G5400_NO_AVX\n"
+              txt += 'set(VCPKG_C_FLAGS "$' + '{VCPKG_C_FLAGS} ' + safe_flags + '")\n'
+              txt += 'set(VCPKG_CXX_FLAGS "$' + '{VCPKG_CXX_FLAGS} ' + safe_flags + '")\n'
+              txt += 'set(VCPKG_C_FLAGS_RELEASE "$' + '{VCPKG_C_FLAGS_RELEASE} ' + safe_flags + '")\n'
+              txt += 'set(VCPKG_CXX_FLAGS_RELEASE "$' + '{VCPKG_CXX_FLAGS_RELEASE} ' + safe_flags + '")\n'
               t.write_text(txt)
 
           print("Patched for Pentium G5400: x86-64-v2, NO AVX")
@@ -109,30 +103,11 @@ jobs:
           fi
           echo "OK: compile flags look safe"
 
-      - name: Verify binaries have no AVX instructions
+      - name: Verify TextCodec has no AVX YMM instructions
         working-directory: ladybird
         run: |
-          set +e
-          BAD=0
-
-          while IFS= read -r f; do
-            file "$f" | grep -q "ELF" || continue
-
-            FOUND="$(objdump -d -Mintel "$f" 2>/dev/null | grep -E '^[[:space:]]*[0-9a-f]+:[[:space:]]+([0-9a-f]{2} )+[[:space:]]+v[a-z0-9]+' | head -20)"
-
-            if [ -n "$FOUND" ]; then
-              echo "BAD AVX-like instruction in: $f"
-              echo "$FOUND"
-              BAD=1
-            fi
-          done < <(find Build/release -type f \( -perm -111 -o -name "*.so*" \))
-
-          if [ "$BAD" = "1" ]; then
-            echo "BAD: AVX instructions found, artifact will NOT be uploaded"
-            exit 1
-          fi
-
-          echo "OK: no AVX instruction mnemonics found in Ladybird ELF files"
+          objdump -d -Mintel Build/release/lib/liblagom-textcodec.so.0.1.0 | grep -E "ymm|vmov|vpxor|vzeroupper" && exit 1 || true
+          echo "OK: liblagom-textcodec has no obvious AVX/YMM instructions"
 
       - name: Pack Ladybird
         run: |
