@@ -11,6 +11,7 @@ jobs:
 
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      SAFE_CPU_FLAGS: "-march=x86-64-v2 -mtune=generic -mno-avx -mno-avx2 -mno-fma -mno-f16c -mno-bmi -mno-bmi2 -mno-avx512f"
 
     steps:
       - name: Install system packages
@@ -38,19 +39,34 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/LadybirdBrowser/ladybird.git ladybird
 
-      - name: Hard patch CPU flags for Pentium G5400
-        working-directory: ladybird
+      - name: Patch CPU flags for Pentium G5400
         run: |
+          cd "$GITHUB_WORKSPACE"
+
+          echo "Current directory:"
+          pwd
+
+          echo "Finding Ladybird CPU options file..."
+          find . -path "*/Meta/CMake/common_compile_options.cmake" -print
+
           python3 - <<'PY'
           from pathlib import Path
+          import os
 
-          safe_flags = "-march=x86-64-v2 -mtune=generic -mno-avx -mno-avx2 -mno-fma -mno-f16c -mno-bmi -mno-bmi2 -mno-avx512f"
+          safe_flags = os.environ["SAFE_CPU_FLAGS"]
 
-          p = Path("Meta/CMake/common_compile_options.cmake")
+          matches = list(Path(".").rglob("Meta/CMake/common_compile_options.cmake"))
+          if not matches:
+              raise SystemExit("ERROR: common_compile_options.cmake not found")
+
+          p = matches[0]
+          print("Patching:", p)
+
           s = p.read_text()
 
           s = s.replace("add_cxx_compile_options(-march=native)", f"add_cxx_compile_options({safe_flags})")
           s = s.replace("add_cxx_compile_options(-march=x86-64-v3)", f"add_cxx_compile_options({safe_flags})")
+
           s = s.replace("-march=native", "-march=x86-64-v2")
           s = s.replace("-march=x86-64-v3", "-march=x86-64-v2")
           s = s.replace("-mtune=native", "-mtune=generic")
@@ -59,34 +75,45 @@ jobs:
 
           # FORCE_PENTIUM_G5400_NO_AVX
           if (CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+              add_compile_options({safe_flags})
               add_cxx_compile_options({safe_flags})
           endif()
           """
 
           p.write_text(s)
 
-          triplets = Path("Meta/CMake/vcpkg/release-triplets")
-          for t in triplets.glob("*.cmake"):
-              txt = t.read_text()
-              txt += "\n\n# FORCE_PENTIUM_G5400_NO_AVX\n"
-              txt += 'set(VCPKG_C_FLAGS "$' + '{VCPKG_C_FLAGS} ' + safe_flags + '")\n'
-              txt += 'set(VCPKG_CXX_FLAGS "$' + '{VCPKG_CXX_FLAGS} ' + safe_flags + '")\n'
-              txt += 'set(VCPKG_C_FLAGS_RELEASE "$' + '{VCPKG_C_FLAGS_RELEASE} ' + safe_flags + '")\n'
-              txt += 'set(VCPKG_CXX_FLAGS_RELEASE "$' + '{VCPKG_CXX_FLAGS_RELEASE} ' + safe_flags + '")\n'
-              t.write_text(txt)
+          repo = p.parents[2]
+          triplets = repo / "Meta/CMake/vcpkg/release-triplets"
 
-          print("Patched for Pentium G5400: x86-64-v2, NO AVX")
+          if triplets.exists():
+              for t in triplets.glob("*.cmake"):
+                  txt = t.read_text()
+                  txt += "\n\n# FORCE_PENTIUM_G5400_NO_AVX\n"
+                  txt += 'set(VCPKG_C_FLAGS "${VCPKG_C_FLAGS} ' + safe_flags + '")\n'
+                  txt += 'set(VCPKG_CXX_FLAGS "${VCPKG_CXX_FLAGS} ' + safe_flags + '")\n'
+                  txt += 'set(VCPKG_C_FLAGS_RELEASE "${VCPKG_C_FLAGS_RELEASE} ' + safe_flags + '")\n'
+                  txt += 'set(VCPKG_CXX_FLAGS_RELEASE "${VCPKG_CXX_FLAGS_RELEASE} ' + safe_flags + '")\n'
+                  t.write_text(txt)
+              print("Patched vcpkg triplets:", triplets)
+          else:
+              print("WARNING: vcpkg triplets folder not found:", triplets)
+
+          print("Patch done: Pentium G5400 / x86-64-v2 / NO AVX")
           PY
 
-          grep -R "march=native\|march=x86-64-v3" Meta/CMake && exit 1 || true
+          echo "Checking that native/v3 flags are gone..."
+          if grep -R "march=native\|march=x86-64-v3" ./ladybird/Meta/CMake 2>/dev/null; then
+            echo "BAD: native/v3 flags still found"
+            exit 1
+          fi
 
       - name: Build Ladybird for Pentium G5400
         working-directory: ladybird
         run: |
           rm -rf Build
 
-          export CFLAGS="-march=x86-64-v2 -mtune=generic -mno-avx -mno-avx2 -mno-fma -mno-f16c -mno-bmi -mno-bmi2 -mno-avx512f"
-          export CXXFLAGS="-march=x86-64-v2 -mtune=generic -mno-avx -mno-avx2 -mno-fma -mno-f16c -mno-bmi -mno-bmi2 -mno-avx512f"
+          export CFLAGS="$SAFE_CPU_FLAGS"
+          export CXXFLAGS="$SAFE_CPU_FLAGS"
 
           CC=clang-21 \
           CXX=clang++-21 \
@@ -97,17 +124,38 @@ jobs:
         working-directory: ladybird
         run: |
           echo "Checking compile_commands.json..."
+
           if grep -R -- "-march=native\|-march=x86-64-v3\|-mavx\|-mavx2\|-mfma\|-mf16c" Build/release/compile_commands.json 2>/dev/null; then
-            echo "BAD: forbidden CPU flags found"
+            echo "BAD: forbidden CPU flags found in compile commands"
             exit 1
           fi
-          echo "OK: compile flags look safe"
 
-      - name: Verify TextCodec has no AVX YMM instructions
+          echo "OK: compile flags do not contain native/v3/AVX"
+
+      - name: Verify no AVX instructions in binaries
         working-directory: ladybird
         run: |
-          objdump -d -Mintel Build/release/lib/liblagom-textcodec.so.0.1.0 | grep -E "ymm|vmov|vpxor|vzeroupper" && exit 1 || true
-          echo "OK: liblagom-textcodec has no obvious AVX/YMM instructions"
+          set +e
+          BAD=0
+
+          while IFS= read -r f; do
+            file "$f" | grep -q "ELF" || continue
+
+            FOUND="$(objdump -d -Mintel "$f" 2>/dev/null | grep -E '^[[:space:]]*[0-9a-f]+:[[:space:]]+([0-9a-f]{2} )+[[:space:]]+v[a-z0-9]+' | head -20)"
+
+            if [ -n "$FOUND" ]; then
+              echo "BAD: AVX/VEX instruction found in: $f"
+              echo "$FOUND"
+              BAD=1
+            fi
+          done < <(find Build/release -type f \( -perm -111 -o -name "*.so*" \))
+
+          if [ "$BAD" = "1" ]; then
+            echo "BAD: AVX instructions found. Artifact will not be uploaded."
+            exit 1
+          fi
+
+          echo "OK: no obvious AVX/VEX instructions found in ELF files"
 
       - name: Pack Ladybird
         run: |
