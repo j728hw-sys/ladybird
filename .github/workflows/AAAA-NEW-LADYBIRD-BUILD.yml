@@ -41,8 +41,11 @@ jobs:
           rm -rf src
           git clone --depth 1 https://github.com/LadybirdBrowser/ladybird.git src
 
-          echo "Проверяю файл:"
-          ls -l src/Meta/CMake/common_compile_options.cmake
+          echo "Показываю Meta/CMake:"
+          ls -la src/Meta/CMake
+
+          echo "Ищу compile options:"
+          find src/Meta/CMake -maxdepth 2 -type f | grep -E "compile.*options|options.*compile" || true
 
       - name: Patch CPU flags for Pentium G5400
         working-directory: src
@@ -53,17 +56,27 @@ jobs:
 
           safe_flags = os.environ["SAFE_CPU_FLAGS"]
 
-          p = Path("Meta/CMake/common_compile_options.cmake")
-          if not p.exists():
-              raise SystemExit("ERROR: Meta/CMake/common_compile_options.cmake not found")
+          candidates = [
+              Path("Meta/CMake/compile_options.cmake"),
+              Path("Meta/CMake/common_compile_options.cmake"),
+          ]
 
-          s = p.read_text()
+          existing = [p for p in candidates if p.exists()]
+          if not existing:
+              print("Meta/CMake files:")
+              for p in Path("Meta/CMake").glob("*"):
+                  print(" -", p)
+              raise SystemExit("ERROR: no compile_options.cmake/common_compile_options.cmake found")
 
-          s = s.replace("-march=native", "-march=x86-64-v2")
-          s = s.replace("-march=x86-64-v3", "-march=x86-64-v2")
-          s = s.replace("-mtune=native", "-mtune=generic")
+          for p in existing:
+              print("Patching:", p)
+              s = p.read_text()
 
-          s += f"""
+              s = s.replace("-march=native", "-march=x86-64-v2")
+              s = s.replace("-march=x86-64-v3", "-march=x86-64-v2")
+              s = s.replace("-mtune=native", "-mtune=generic")
+
+              s += f"""
 
           # FORCE_PENTIUM_G5400_NO_AVX
           if (CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
@@ -72,11 +85,12 @@ jobs:
           endif()
           """
 
-          p.write_text(s)
+              p.write_text(s)
 
           triplets = Path("Meta/CMake/vcpkg/release-triplets")
           if triplets.exists():
               for t in triplets.glob("*.cmake"):
+                  print("Patching vcpkg triplet:", t)
                   txt = t.read_text()
                   txt += "\n\n# FORCE_PENTIUM_G5400_NO_AVX\n"
                   txt += 'set(VCPKG_C_FLAGS "${VCPKG_C_FLAGS} ' + safe_flags + '")\n'
@@ -84,10 +98,13 @@ jobs:
                   txt += 'set(VCPKG_C_FLAGS_RELEASE "${VCPKG_C_FLAGS_RELEASE} ' + safe_flags + '")\n'
                   txt += 'set(VCPKG_CXX_FLAGS_RELEASE "${VCPKG_CXX_FLAGS_RELEASE} ' + safe_flags + '")\n'
                   t.write_text(txt)
+          else:
+              print("WARNING: vcpkg release-triplets folder not found")
 
-          print("Patched for Pentium G5400 / NO AVX")
+          print("Patch done: Pentium G5400 / x86-64-v2 / NO AVX")
           PY
 
+          echo "Проверяю, что native/v3 убраны:"
           if grep -R "march=native\|march=x86-64-v3" Meta/CMake 2>/dev/null; then
             echo "BAD: native/v3 flags still found"
             exit 1
