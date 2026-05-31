@@ -1,10 +1,9 @@
-name: AAAA NEW LADYBIRD BUILD G5400 CACHED
+name: AAAA LADYBIRD PENTIUM G5400 NO AVX
 
 "on": [workflow_dispatch]
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
   build:
@@ -12,20 +11,16 @@ jobs:
 
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_BASEDIR: ${{ github.workspace }}/ladybird
-      CCACHE_COMPILERCHECK: content
-      CCACHE_NOHASHDIR: "true"
 
     steps:
       - name: Install system packages
         run: |
           sudo apt update
           sudo apt install -y \
-            autoconf autoconf-archive automake build-essential ccache cmake curl \
+            autoconf autoconf-archive automake build-essential cmake curl \
             fonts-liberation2 git libdrm-dev libgl1-mesa-dev libtool nasm \
             ninja-build pkg-config python3-venv qt6-base-dev qt6-tools-dev-tools \
-            qt6-wayland tar unzip zip libpulse-dev wget
+            qt6-wayland tar unzip zip libpulse-dev wget binutils
 
       - name: Install clang 21
         run: |
@@ -42,77 +37,109 @@ jobs:
       - name: Download official Ladybird source
         run: |
           git clone --depth 1 https://github.com/LadybirdBrowser/ladybird.git ladybird
-          cd ladybird
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-        id: ladybird_rev
 
-      - name: Restore build caches
-        uses: actions/cache@v4
-        with:
-          path: |
-            .ccache
-            ladybird/Build/caches
-            ladybird/Build/vcpkg
-          key: ${{ runner.os }}-ladybird-g5400-x86-64-v2-${{ steps.ladybird_rev.outputs.sha }}
-          restore-keys: |
-            ${{ runner.os }}-ladybird-g5400-x86-64-v2-
-
-      - name: Prepare ccache wrappers
-        run: |
-          mkdir -p "$GITHUB_WORKSPACE/.ccache-wrappers"
-          ln -sf /usr/bin/ccache "$GITHUB_WORKSPACE/.ccache-wrappers/clang-21"
-          ln -sf /usr/bin/ccache "$GITHUB_WORKSPACE/.ccache-wrappers/clang++-21"
-          ccache -M 4G
-          ccache -z
-          echo "$GITHUB_WORKSPACE/.ccache-wrappers" >> "$GITHUB_PATH"
-
-      - name: Patch CPU target for Pentium G5400
+      - name: Hard patch CPU flags for Pentium G5400
         working-directory: ladybird
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          patches = [
-              Path("Meta/CMake/common_compile_options.cmake"),
-          ]
+          safe_flags = "-march=x86-64-v2 -mtune=generic -mno-avx -mno-avx2 -mno-fma -mno-f16c -mno-bmi -mno-bmi2 -mno-avx512f"
 
-          for p in patches:
-              s = p.read_text()
-              s = s.replace("-march=native", "-march=x86-64-v2")
-              s = s.replace("-march=x86-64-v3", "-march=x86-64-v2")
-              s = s.replace("-mtune=native", "-mtune=generic")
-              p.write_text(s)
+          # Главный файл, где Ladybird ставит -march=native / x86-64-v3
+          p = Path("Meta/CMake/common_compile_options.cmake")
+          s = p.read_text()
 
-          print("Patched Ladybird CPU target: x86-64-v2 / mtune=generic")
+          s = s.replace("add_cxx_compile_options(-march=native)", f"add_cxx_compile_options({safe_flags})")
+          s = s.replace("add_cxx_compile_options(-march=x86-64-v3)", f"add_cxx_compile_options({safe_flags})")
+          s = s.replace("-march=native", "-march=x86-64-v2")
+          s = s.replace("-march=x86-64-v3", "-march=x86-64-v2")
+          s = s.replace("-mtune=native", "-mtune=generic")
+
+          # На всякий случай добавляем NO-AVX флаги в самый конец, чтобы они были ПОСЛЕДНИМИ
+          s += f"""
+
+          # FORCE_PENTIUM_G5400_NO_AVX
+          if (CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+              add_cxx_compile_options({safe_flags})
+          endif()
+          """
+
+          p.write_text(s)
+
+          # Патчим vcpkg triplets тоже, чтобы зависимости не собрали AVX
+          triplets = Path("Meta/CMake/vcpkg/release-triplets")
+          for t in triplets.glob("*.cmake"):
+              txt = t.read_text()
+              txt += f"""
+
+          # FORCE_PENTIUM_G5400_NO_AVX
+          set(VCPKG_C_FLAGS "${{VCPKG_C_FLAGS}} {safe_flags}")
+          set(VCPKG_CXX_FLAGS "${{VCPKG_CXX_FLAGS}} {safe_flags}")
+          set(VCPKG_C_FLAGS_RELEASE "${{VCPKG_C_FLAGS_RELEASE}} {safe_flags}")
+          set(VCPKG_CXX_FLAGS_RELEASE "${{VCPKG_CXX_FLAGS_RELEASE}} {safe_flags}")
+          """
+              t.write_text(txt)
+
+          print("Patched for Pentium G5400: x86-64-v2, NO AVX")
           PY
 
-          grep -R "march=x86-64" Meta/CMake/common_compile_options.cmake || true
-          grep -R "march=native" Meta/CMake/common_compile_options.cmake && exit 1 || true
-          grep -R "march=x86-64-v3" Meta/CMake/common_compile_options.cmake && exit 1 || true
+          grep -R "march=native\|march=x86-64-v3" Meta/CMake && exit 1 || true
 
       - name: Build Ladybird for Pentium G5400
         working-directory: ladybird
         run: |
-          export PATH="$GITHUB_WORKSPACE/.ccache-wrappers:$PATH"
+          rm -rf Build
+
+          export CFLAGS="-march=x86-64-v2 -mtune=generic -mno-avx -mno-avx2 -mno-fma -mno-f16c -mno-bmi -mno-bmi2 -mno-avx512f"
+          export CXXFLAGS="-march=x86-64-v2 -mtune=generic -mno-avx -mno-avx2 -mno-fma -mno-f16c -mno-bmi -mno-bmi2 -mno-avx512f"
 
           CC=clang-21 \
           CXX=clang++-21 \
-          CFLAGS="-march=x86-64-v2 -mtune=generic" \
-          CXXFLAGS="-march=x86-64-v2 -mtune=generic" \
           BUILD_PRESET=Release \
           ./Meta/ladybird.py build --gui=Qt
 
-      - name: Show ccache stats
-        if: always()
+      - name: Verify compile flags
+        working-directory: ladybird
         run: |
-          ccache -s || true
+          echo "Checking compile_commands.json..."
+          if grep -R -- "-march=native\|-march=x86-64-v3\|-mavx\|-mavx2\|-mfma\|-mf16c" Build/release/compile_commands.json 2>/dev/null; then
+            echo "BAD: forbidden CPU flags found"
+            exit 1
+          fi
+          echo "OK: compile flags look safe"
+
+      - name: Verify binaries have no AVX instructions
+        working-directory: ladybird
+        run: |
+          set +e
+          BAD=0
+
+          while IFS= read -r f; do
+            file "$f" | grep -q "ELF" || continue
+
+            FOUND="$(objdump -d -Mintel "$f" 2>/dev/null | grep -E '^[[:space:]]*[0-9a-f]+:[[:space:]]+([0-9a-f]{2} )+[[:space:]]+v[a-z0-9]+' | head -20)"
+
+            if [ -n "$FOUND" ]; then
+              echo "BAD AVX-like instruction in: $f"
+              echo "$FOUND"
+              BAD=1
+            fi
+          done < <(find Build/release -type f \( -perm -111 -o -name "*.so*" \))
+
+          if [ "$BAD" = "1" ]; then
+            echo "BAD: AVX instructions found, artifact will NOT be uploaded"
+            exit 1
+          fi
+
+          echo "OK: no AVX instruction mnemonics found in Ladybird ELF files"
 
       - name: Pack Ladybird
         run: |
-          tar -czf ladybird-linux-build-g5400.tar.gz -C ladybird Build/release
+          tar -czf ladybird-pentium-g5400-no-avx.tar.gz -C ladybird Build/release
 
       - name: Upload Ladybird artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ladybird-linux-build-g5400
-          path: ladybird-linux-build-g5400.tar.gz
+          name: ladybird-pentium-g5400-no-avx
+          path: ladybird-pentium-g5400-no-avx.tar.gz
