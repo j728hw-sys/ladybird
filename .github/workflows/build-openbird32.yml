@@ -36,7 +36,8 @@ jobs:
           /bin/bash -n OpenBird32/build.sh
           grep -q '9e0198a1a2295f03fa1e8676e216e22c9c7d380b' OpenBird32/build.sh
           grep -q 'FlappyBird iOS' OpenBird32/build.sh
-          grep -q 'ARCHS=armv7' OpenBird32/build.sh
+          grep -q 'translate-arch' OpenBird32/build.sh
+          grep -q 'armv7-apple-ios5.0' OpenBird32/build.sh
           test ! -e OpenBird32/build/artifacts/OpenBird-iPhoneOS5.0-armv7.ipa
 
       - name: Build real OpenBird as ARMv7 IPA
@@ -57,6 +58,7 @@ jobs:
           lipo -info "$BIN" | grep -q 'armv7'
           plutil -extract CFBundleIdentifier raw "$APP/Info.plist" | grep -qx 'org.openbird.armv7'
           plutil -extract CFBundleExecutable raw "$APP/Info.plist" | grep -qx 'OpenBird'
+          plutil -extract MinimumOSVersion raw "$APP/Info.plist" | grep -qx '5.0'
           test ! -e "$APP/_CodeSignature"
           test ! -e "$APP/embedded.mobileprovision"
           find "$APP" -type f | grep -q '/scripts/GameScene.lua$'
