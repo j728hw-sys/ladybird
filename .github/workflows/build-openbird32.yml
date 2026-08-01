@@ -41,9 +41,32 @@ jobs:
           test ! -e OpenBird32/build/artifacts/OpenBird-iPhoneOS5.0-armv7.ipa
 
       - name: Build real OpenBird as ARMv7 IPA
+        id: openbird_build
+        continue-on-error: true
         run: /bin/bash OpenBird32/build.sh
 
+      - name: Extract concise build diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          LOG=OpenBird32/build/audit/xcodebuild.log
+          ERR=OpenBird32/build/audit/errors.txt
+          mkdir -p OpenBird32/build/audit
+          if test -f "$LOG"; then
+            {
+              echo '=== Xcode errors ==='
+              grep -nE '(^|[[:space:]])(error:|fatal error:)|BUILD FAILED|The following build commands failed' "$LOG" || true
+              echo
+              echo '=== Last 160 log lines ==='
+              tail -n 160 "$LOG"
+            } > "$ERR"
+            cat "$ERR"
+          else
+            echo 'xcodebuild.log was not created' | tee "$ERR"
+          fi
+
       - name: Inspect IPA
+        if: steps.openbird_build.outcome == 'success'
         run: |
           set -euo pipefail
           IPA=OpenBird32/build/artifacts/OpenBird-iPhoneOS5.0-armv7.ipa
@@ -66,12 +89,16 @@ jobs:
           shasum -a 256 -c OpenBird32/build/artifacts/SHA256SUMS.txt
 
       - name: Upload OpenBird IPA and audit
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: OpenBird-iPhoneOS5.0-armv7
           path: |
-            OpenBird32/build/artifacts/OpenBird-iPhoneOS5.0-armv7.ipa
-            OpenBird32/build/artifacts/SHA256SUMS.txt
+            OpenBird32/build/artifacts/**
             OpenBird32/build/audit/**
           if-no-files-found: error
           retention-days: 30
+
+      - name: Fail job when build failed
+        if: steps.openbird_build.outcome != 'success'
+        run: exit 1
