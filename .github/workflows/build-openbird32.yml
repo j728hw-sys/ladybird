@@ -35,10 +35,11 @@ jobs:
           set -euo pipefail
           /bin/bash -n OpenBird32/build.sh
           /bin/bash -n OpenBird32/xcodebuild-compat.sh
+          /bin/bash -n OpenBird32/translate-arch-v2.sh
           grep -q '9e0198a1a2295f03fa1e8676e216e22c9c7d380b' OpenBird32/build.sh
           grep -q 'FlappyBird iOS' OpenBird32/build.sh
           grep -q 'translate-arch' OpenBird32/build.sh
-          grep -q 'armv7-apple-ios5.0' OpenBird32/build.sh
+          grep -q 'armv7-apple-ios5.0' OpenBird32/translate-arch-v2.sh
           grep -q 'AssetsManager.cpp' OpenBird32/xcodebuild-compat.sh
           test ! -e OpenBird32/build/artifacts/OpenBird-iPhoneOS5.0-armv7.ipa
 
@@ -49,10 +50,22 @@ jobs:
           set -euo pipefail
           REAL_XCODEBUILD="$(xcrun --find xcodebuild)"
           COMPAT_BIN="$RUNNER_TEMP/openbird-compat-bin"
-          mkdir -p "$COMPAT_BIN"
+          ARCH_WRAP="$RUNNER_TEMP/openbird-armv7-tools"
+          mkdir -p "$COMPAT_BIN" "$ARCH_WRAP"
           cp OpenBird32/xcodebuild-compat.sh "$COMPAT_BIN/xcodebuild"
-          chmod +x "$COMPAT_BIN/xcodebuild"
-          REAL_XCODEBUILD="$REAL_XCODEBUILD" PATH="$COMPAT_BIN:$PATH" /bin/bash OpenBird32/build.sh
+          cp OpenBird32/translate-arch-v2.sh "$ARCH_WRAP/translate-arch-v2"
+          chmod +x "$COMPAT_BIN/xcodebuild" "$ARCH_WRAP/translate-arch-v2"
+          for tool in clang 'clang++' ld libtool lipo; do
+            ln -s translate-arch-v2 "$ARCH_WRAP/$tool"
+          done
+          export REAL_XCODEBUILD
+          export OPENBIRD_ARCH_WRAP="$ARCH_WRAP"
+          export OPENBIRD_REAL_CLANG="$(xcrun --sdk iphoneos --find clang)"
+          export OPENBIRD_REAL_CLANGXX="$(xcrun --sdk iphoneos --find clang++)"
+          export OPENBIRD_REAL_LD="$(xcrun --sdk iphoneos --find ld)"
+          export OPENBIRD_REAL_LIBTOOL="$(xcrun --find libtool)"
+          export OPENBIRD_REAL_LIPO="$(xcrun --find lipo)"
+          PATH="$COMPAT_BIN:$PATH" /bin/bash OpenBird32/build.sh
 
       - name: Extract concise build diagnostics
         if: always()
