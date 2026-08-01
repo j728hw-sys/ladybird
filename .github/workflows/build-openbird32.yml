@@ -1,0 +1,75 @@
+name: Build OpenBird ARMv7
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'OpenBird32/**'
+      - '.github/workflows/build-openbird32.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout wrapper branch
+        uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphoneos --find clang
+          xcrun --sdk iphoneos --find ld
+
+      - name: Validate build wrapper
+        run: |
+          set -euo pipefail
+          /bin/bash -n OpenBird32/build.sh
+          grep -q '9e0198a1a2295f03fa1e8676e216e22c9c7d380b' OpenBird32/build.sh
+          grep -q 'FlappyBird iOS' OpenBird32/build.sh
+          grep -q 'ARCHS=armv7' OpenBird32/build.sh
+          test ! -e OpenBird32/build/artifacts/OpenBird-iPhoneOS5.0-armv7.ipa
+
+      - name: Build real OpenBird as ARMv7 IPA
+        run: /bin/bash OpenBird32/build.sh
+
+      - name: Inspect IPA
+        run: |
+          set -euo pipefail
+          IPA=OpenBird32/build/artifacts/OpenBird-iPhoneOS5.0-armv7.ipa
+          test -s "$IPA"
+          rm -rf "$RUNNER_TEMP/openbird32-inspect"
+          mkdir -p "$RUNNER_TEMP/openbird32-inspect"
+          ditto -x -k "$IPA" "$RUNNER_TEMP/openbird32-inspect"
+          APP="$RUNNER_TEMP/openbird32-inspect/Payload/OpenBird.app"
+          BIN="$APP/OpenBird"
+          test -x "$BIN"
+          file "$BIN" | grep -q 'arm_v7\|armv7'
+          lipo -info "$BIN" | grep -q 'armv7'
+          plutil -extract CFBundleIdentifier raw "$APP/Info.plist" | grep -qx 'org.openbird.armv7'
+          plutil -extract CFBundleExecutable raw "$APP/Info.plist" | grep -qx 'OpenBird'
+          test ! -e "$APP/_CodeSignature"
+          test ! -e "$APP/embedded.mobileprovision"
+          find "$APP" -type f | grep -q '/scripts/GameScene.lua$'
+          find "$APP" -type f | grep -q '/scripts/StartScene.lua$'
+          shasum -a 256 -c OpenBird32/build/artifacts/SHA256SUMS.txt
+
+      - name: Upload OpenBird IPA and audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenBird-iPhoneOS5.0-armv7
+          path: |
+            OpenBird32/build/artifacts/OpenBird-iPhoneOS5.0-armv7.ipa
+            OpenBird32/build/artifacts/SHA256SUMS.txt
+            OpenBird32/build/audit/**
+          if-no-files-found: error
+          retention-days: 30
