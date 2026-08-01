@@ -34,10 +34,12 @@ jobs:
         run: |
           set -euo pipefail
           /bin/bash -n OpenBird32/build.sh
+          /bin/bash -n OpenBird32/xcodebuild-compat.sh
           grep -q '9e0198a1a2295f03fa1e8676e216e22c9c7d380b' OpenBird32/build.sh
           grep -q 'FlappyBird iOS' OpenBird32/build.sh
           grep -q 'translate-arch' OpenBird32/build.sh
           grep -q 'armv7-apple-ios5.0' OpenBird32/build.sh
+          grep -q 'AssetsManager.cpp' OpenBird32/xcodebuild-compat.sh
           test ! -e OpenBird32/build/artifacts/OpenBird-iPhoneOS5.0-armv7.ipa
 
       - name: Build real OpenBird as ARMv7 IPA
@@ -48,31 +50,9 @@ jobs:
           REAL_XCODEBUILD="$(xcrun --find xcodebuild)"
           COMPAT_BIN="$RUNNER_TEMP/openbird-compat-bin"
           mkdir -p "$COMPAT_BIN"
-          python3 - "$COMPAT_BIN/xcodebuild" "$REAL_XCODEBUILD" <<'PY'
-          from pathlib import Path
-          import shlex
-          import sys
-
-          path = Path(sys.argv[1])
-          real = shlex.quote(sys.argv[2])
-          path.write_text(f'''#!/bin/bash
-          set -euo pipefail
-          args=("$@")
-          is_build=0
-          for arg in "${{args[@]}}"; do
-            [[ "$arg" == "build" ]] && is_build=1
-          done
-          if [[ $is_build -eq 1 ]]; then
-            # AssetsManager is an optional Cocos2d-x hot-update module. Its
-            # source calls system(), which modern iOS SDKs explicitly forbid.
-            # OpenBird never references it, so exclude only that translation unit.
-            exec {real} "${{args[@]}}" EXCLUDED_SOURCE_FILE_NAMES=AssetsManager.cpp
-          fi
-          exec {real} "${{args[@]}}"
-          ''', encoding='utf-8')
-          path.chmod(0o755)
-          PY
-          PATH="$COMPAT_BIN:$PATH" /bin/bash OpenBird32/build.sh
+          cp OpenBird32/xcodebuild-compat.sh "$COMPAT_BIN/xcodebuild"
+          chmod +x "$COMPAT_BIN/xcodebuild"
+          REAL_XCODEBUILD="$REAL_XCODEBUILD" PATH="$COMPAT_BIN:$PATH" /bin/bash OpenBird32/build.sh
 
       - name: Extract concise build diagnostics
         if: always()
