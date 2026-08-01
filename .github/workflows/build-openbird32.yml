@@ -36,11 +36,13 @@ jobs:
           /bin/bash -n OpenBird32/build.sh
           /bin/bash -n OpenBird32/xcodebuild-compat.sh
           /bin/bash -n OpenBird32/translate-arch-v2.sh
+          /bin/bash -n OpenBird32/sanitize-ipa.sh
           grep -q '9e0198a1a2295f03fa1e8676e216e22c9c7d380b' OpenBird32/build.sh
           grep -q 'FlappyBird iOS' OpenBird32/build.sh
           grep -q 'translate-arch' OpenBird32/build.sh
           grep -q 'armv7-apple-ios5.0' OpenBird32/translate-arch-v2.sh
           grep -q 'AssetsManager.cpp' OpenBird32/xcodebuild-compat.sh
+          grep -q 'mobdebug.lua' OpenBird32/sanitize-ipa.sh
           test ! -e OpenBird32/build/artifacts/OpenBird-iPhoneOS5.0-armv7.ipa
 
       - name: Build real OpenBird as ARMv7 IPA
@@ -67,6 +69,15 @@ jobs:
           export OPENBIRD_REAL_LIPO="$(xcrun --find lipo)"
           PATH="$COMPAT_BIN:$PATH" /bin/bash OpenBird32/build.sh
 
+      - name: Remove unused Lua debugger
+        id: sanitize
+        if: steps.openbird_build.outcome == 'success'
+        continue-on-error: true
+        run: |
+          /bin/bash OpenBird32/sanitize-ipa.sh \
+            OpenBird32/build/artifacts/OpenBird-iPhoneOS5.0-armv7.ipa \
+            OpenBird32/build/audit
+
       - name: Extract concise build diagnostics
         if: always()
         run: |
@@ -88,7 +99,7 @@ jobs:
           fi
 
       - name: Inspect IPA
-        if: steps.openbird_build.outcome == 'success'
+        if: steps.openbird_build.outcome == 'success' && steps.sanitize.outcome == 'success'
         run: |
           set -euo pipefail
           IPA=OpenBird32/build/artifacts/OpenBird-iPhoneOS5.0-armv7.ipa
@@ -106,6 +117,7 @@ jobs:
           plutil -extract MinimumOSVersion raw "$APP/Info.plist" | grep -qx '5.0'
           test ! -e "$APP/_CodeSignature"
           test ! -e "$APP/embedded.mobileprovision"
+          test ! -e "$APP/mobdebug.lua"
           find "$APP" -type f | grep -q '/scripts/GameScene.lua$'
           find "$APP" -type f | grep -q '/scripts/StartScene.lua$'
           shasum -a 256 -c OpenBird32/build/artifacts/SHA256SUMS.txt
@@ -121,6 +133,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Fail job when build failed
-        if: steps.openbird_build.outcome != 'success'
+      - name: Fail job when build or sanitization failed
+        if: steps.openbird_build.outcome != 'success' || steps.sanitize.outcome == 'failure'
         run: exit 1
