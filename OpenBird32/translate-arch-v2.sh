@@ -78,6 +78,12 @@ while [[ $# -gt 0 ]]; do
       shift
       args+=("${1:-18.5}")
       ;;
+    -fobjc-link-runtime)
+      # ARC is disabled for this legacy project. The modern driver otherwise
+      # tries to inject the removed libarclite archive for iOS 5. Link the
+      # ordinary Objective-C runtime stub directly instead.
+      args+=("-lobjc")
+      ;;
     -mcpu=apple-*)
       ;;
     arm64)
