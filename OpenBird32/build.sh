@@ -247,8 +247,6 @@ COMMON_SETTINGS=(
   STRIP_INSTALLED_PRODUCT=NO
   VALIDATE_PRODUCT=NO
   LD_NO_PIE=YES
-  PRODUCT_NAME=OpenBird
-  PRODUCT_BUNDLE_IDENTIFIER=org.openbird.armv7
   CONFIGURATION_BUILD_DIR="$PRODUCTS"
   OBJROOT="$OBJROOT"
   SYMROOT="$PRODUCTS"
@@ -273,10 +271,12 @@ xcodebuild \
   "${COMMON_SETTINGS[@]}" \
   2>&1 | tee "$AUDIT/xcodebuild.log"
 
-APP="$PRODUCTS/OpenBird.app"
+APP="$PRODUCTS/FlappyBird iOS.app"
+ORIGINAL_BIN="$APP/FlappyBird iOS"
 test -d "$APP"
 test -f "$APP/Info.plist"
-test -x "$APP/OpenBird"
+test -x "$ORIGINAL_BIN"
+mv "$ORIGINAL_BIN" "$APP/OpenBird"
 
 rm -rf "$APP/_CodeSignature" "$APP/embedded.mobileprovision"
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable OpenBird" "$APP/Info.plist"
