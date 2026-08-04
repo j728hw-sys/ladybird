@@ -1,0 +1,95 @@
+name: Build Telegram iOS 11.1 Unsigned IPA
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/build-telegram-11.1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out official Telegram iOS 11.1 sources
+        uses: actions/checkout@v4
+        with:
+          repository: TelegramMessenger/Telegram-iOS
+          ref: release-11.1
+          submodules: recursive
+          fetch-depth: 0
+          path: telegram-ios
+
+      - name: Select required Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d /Applications/Xcode_15.2.app
+          sudo xcode-select -s /Applications/Xcode_15.2.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Move sources to canonical directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /Users/Shared
+          sudo rm -rf /Users/Shared/telegram-ios
+          sudo mv "$GITHUB_WORKSPACE/telegram-ios" /Users/Shared/telegram-ios
+          sudo chown -R "$(id -u):$(id -g)" /Users/Shared/telegram-ios
+
+      - name: Build unsigned IPA using Telegram's official configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_DIR=/Users/Shared/telegram-ios
+          BAZEL_USER_ROOT=/private/var/tmp/_bazel_containerhost
+          cd "$SOURCE_DIR"
+
+          BUILD_NUMBER_OFFSET="$(cat build_number_offset)"
+          APP_VERSION="$(python3 -c 'import json; print(json.load(open("versions.json"))["app"])')"
+          COMMIT_COUNT="$(git rev-list --count HEAD)"
+          BUILD_NUMBER="$((COMMIT_COUNT + BUILD_NUMBER_OFFSET))"
+
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+
+          python3 build-system/Make/ImportCertificates.py \
+            --path build-system/fake-codesigning/certs
+
+          python3 -u build-system/Make/Make.py \
+            --bazelUserRoot="$BAZEL_USER_ROOT" \
+            build \
+            --configurationPath=build-system/appstore-configuration.json \
+            --codesigningInformationPath=build-system/fake-codesigning \
+            --configuration=release_arm64 \
+            --buildNumber="$BUILD_NUMBER"
+
+      - name: Collect IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /Users/Shared/telegram-ios
+          IPA_PATH="$(find bazel-out -type f -path '*/bin/Telegram/Telegram.ipa' -print -quit)"
+          test -n "$IPA_PATH"
+
+          mkdir -p build/artifacts
+          cp "$IPA_PATH" build/artifacts/Telegram-11.1-unsigned.ipa
+          shasum -a 256 build/artifacts/Telegram-11.1-unsigned.ipa | tee build/artifacts/Telegram-11.1-unsigned.ipa.sha256
+          ls -lh build/artifacts/
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Telegram-11.1-unsigned-ipa
+          path: |
+            /Users/Shared/telegram-ios/build/artifacts/Telegram-11.1-unsigned.ipa
+            /Users/Shared/telegram-ios/build/artifacts/Telegram-11.1-unsigned.ipa.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
