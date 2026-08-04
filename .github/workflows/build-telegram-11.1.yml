@@ -42,6 +42,22 @@ jobs:
           sudo mv "$GITHUB_WORKSPACE/telegram-ios" /Users/Shared/telegram-ios
           sudo chown -R "$(id -u):$(id -g)" /Users/Shared/telegram-ios
 
+      - name: Allow Telegram's historical fake provisioning profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('/Users/Shared/telegram-ios/build-system/bazel-rules/rules_apple/tools/plisttool/plisttool.py')
+          text = path.read_text()
+          old = "    if expire and expire < datetime.datetime.now():"
+          new = "    if False and expire and expire < datetime.datetime.now():"
+          if text.count(old) != 1:
+              raise SystemExit('Could not locate the provisioning-profile expiration check')
+          path.write_text(text.replace(old, new))
+          PY
+
       - name: Build unsigned IPA using Telegram's official configuration
         shell: bash
         run: |
