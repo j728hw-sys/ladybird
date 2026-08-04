@@ -91,8 +91,8 @@ jobs:
         run: |
           set -euo pipefail
           cd /Users/Shared/telegram-ios
-          IPA_PATH="$(find bazel-out -type f -path '*/bin/Telegram/Telegram.ipa' -print -quit)"
-          test -n "$IPA_PATH"
+          IPA_PATH="bazel-bin/Telegram/Telegram.ipa"
+          test -f "$IPA_PATH"
 
           mkdir -p build/artifacts
           cp "$IPA_PATH" build/artifacts/Telegram-11.1-unsigned.ipa
