@@ -1,0 +1,245 @@
+name: Build Telegram iOS 11.1 Sideload IPA
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - .github/workflows/build-telegram-11.1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-smoke-test:
+    runs-on: macos-14
+    timeout-minutes: 10
+
+    steps:
+      - name: Validate unsigned IPA packaging before full build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WORK="$RUNNER_TEMP/telegram-ipa-packaging-smoke"
+          rm -rf "$WORK"
+          mkdir -p "$WORK/Payload/Telegram.app"
+          printf '#!/bin/sh\nexit 0\n' > "$WORK/Payload/Telegram.app/Telegram"
+          chmod +x "$WORK/Payload/Telegram.app/Telegram"
+
+          # Exercise the same archive layout and verification style used after
+          # the real Telegram build. Never pipe unzip into grep under pipefail:
+          # grep -q can exit early and make unzip fail with SIGPIPE (141).
+          (
+            cd "$WORK"
+            /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload fixture.ipa
+          )
+
+          LISTING="$WORK/fixture-listing.txt"
+          /usr/bin/unzip -l "$WORK/fixture.ipa" > "$LISTING"
+
+          if ! /usr/bin/grep -Fq 'Payload/Telegram.app/' "$LISTING"; then
+            echo "Smoke test failed: IPA is missing Payload/Telegram.app/" >&2
+            exit 1
+          fi
+          if /usr/bin/grep -Fq '/_CodeSignature/' "$LISTING"; then
+            echo "Smoke test failed: unexpected _CodeSignature" >&2
+            exit 1
+          fi
+          if /usr/bin/grep -Fq 'embedded.mobileprovision' "$LISTING"; then
+            echo "Smoke test failed: unexpected embedded.mobileprovision" >&2
+            exit 1
+          fi
+
+  build:
+    needs: package-smoke-test
+    runs-on: macos-14
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out official Telegram iOS 11.1 sources
+        uses: actions/checkout@v4
+        with:
+          repository: TelegramMessenger/Telegram-iOS
+          ref: release-11.1
+          submodules: recursive
+          fetch-depth: 0
+          path: telegram-ios
+
+      - name: Select required Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d /Applications/Xcode_15.2.app
+          sudo xcode-select -s /Applications/Xcode_15.2.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Move sources to canonical directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /Users/Shared
+          sudo rm -rf /Users/Shared/telegram-ios
+          sudo mv "$GITHUB_WORKSPACE/telegram-ios" /Users/Shared/telegram-ios
+          sudo chown -R "$(id -u):$(id -g)" /Users/Shared/telegram-ios
+
+      - name: Patch Telegram for sideloaded launch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /Users/Shared/telegram-ios
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+
+          # Telegram's reproducible-build profiles are historical App Store profiles.
+          plisttool = Path('build-system/bazel-rules/rules_apple/tools/plisttool/plisttool.py')
+          text = plisttool.read_text()
+          old = "    if expire and expire < datetime.datetime.now():"
+          new = "    if False and expire and expire < datetime.datetime.now():"
+          if text.count(old) != 1:
+              raise SystemExit('Could not locate the provisioning-profile expiration check')
+          plisttool.write_text(text.replace(old, new))
+
+          # A normal sideload signer often cannot provide Telegram's App Group entitlement.
+          # Let the main app use its own Documents container instead of stopping at launch.
+          app_delegate = Path('submodules/TelegramUI/Sources/AppDelegate.swift')
+          text = app_delegate.read_text()
+          old = '        configuration.sharedContainerIdentifier = appGroupName\n'
+          new = '''        if FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName) != nil {\n            configuration.sharedContainerIdentifier = appGroupName\n        }\n'''
+          if text.count(old) != 1:
+              raise SystemExit('Could not locate URLSession App Group assignment')
+          text = text.replace(old, new)
+
+          old = '        let maybeAppGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName)\n'
+          new = '        let maybeAppGroupUrl = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupName) ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first\n'
+          if text.count(old) != 1:
+              raise SystemExit('Could not locate launch App Group container lookup')
+          app_delegate.write_text(text.replace(old, new))
+
+          # The share/widget/notification/etc. extensions each need their own provisioning
+          # and App Group entitlements. They are not required for the Telegram main app.
+          make_py = Path('build-system/Make/Make.py')
+          text = make_py.read_text()
+          needle = "        if self.disable_provisioning_profiles:\n            combined_arguments += ['--//Telegram:disableProvisioningProfiles']\n"
+          replacement = needle + "\n        combined_arguments += ['--//Telegram:disableExtensions']\n"
+          if text.count(needle) != 1:
+              raise SystemExit('Could not locate Bazel build flags insertion point')
+          make_py.write_text(text.replace(needle, replacement))
+
+          # Remove optional Apple capabilities that a sideloaded build does not need.
+          cfg_path = Path('build-system/appstore-configuration.json')
+          cfg = json.loads(cfg_path.read_text())
+          cfg['enable_siri'] = False
+          cfg['enable_icloud'] = False
+          cfg_path.write_text(json.dumps(cfg, indent=4) + '\n')
+          PY
+
+      - name: Build Telegram 11.1
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_DIR=/Users/Shared/telegram-ios
+          BAZEL_USER_ROOT=/private/var/tmp/_bazel_containerhost
+          cd "$SOURCE_DIR"
+
+          BUILD_NUMBER_OFFSET="$(cat build_number_offset)"
+          APP_VERSION="$(python3 -c 'import json; print(json.load(open("versions.json"))["app"])')"
+          COMMIT_COUNT="$(git rev-list --count HEAD)"
+          BUILD_NUMBER="$((COMMIT_COUNT + BUILD_NUMBER_OFFSET))"
+
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+
+          python3 build-system/Make/ImportCertificates.py \
+            --path build-system/fake-codesigning/certs
+
+          python3 -u build-system/Make/Make.py \
+            --bazelUserRoot="$BAZEL_USER_ROOT" \
+            build \
+            --configurationPath=build-system/appstore-configuration.json \
+            --codesigningInformationPath=build-system/fake-codesigning \
+            --configuration=release_arm64 \
+            --buildNumber="$BUILD_NUMBER"
+
+      - name: Make truly unsigned sideload IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_DIR=/Users/Shared/telegram-ios
+          SOURCE_IPA="$SOURCE_DIR/bazel-bin/Telegram/Telegram.ipa"
+          cd "$SOURCE_DIR"
+          test -s "$SOURCE_IPA"
+
+          rm -rf build/sideload-stage build/artifacts
+          mkdir -p build/sideload-stage build/artifacts
+          cd build/sideload-stage
+          /usr/bin/ditto -x -k "$SOURCE_IPA" .
+
+          APP="$(find Payload -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$APP"
+
+          # Remove Telegram's reproducible-build signatures/profiles. The user's
+          # sideload tool should apply a fresh signature to the resulting IPA.
+          find Payload -type d -name _CodeSignature -prune -exec rm -rf {} +
+          find Payload -type f -name embedded.mobileprovision -delete
+
+          while IFS= read -r -d '' f; do
+            case "$(/usr/bin/file "$f")" in
+              *Mach-O*)
+                /usr/bin/codesign --remove-signature "$f" 2>/dev/null || true
+                ;;
+            esac
+          done < <(find Payload -type f -print0)
+
+          # Fail here, before packaging, if any Mach-O signature still survived.
+          while IFS= read -r -d '' f; do
+            case "$(/usr/bin/file "$f")" in
+              *Mach-O*)
+                if /usr/bin/codesign -d "$f" >/dev/null 2>&1; then
+                  echo "A code signature is still present: $f" >&2
+                  exit 1
+                fi
+                ;;
+            esac
+          done < <(find Payload -type f -print0)
+
+          IPA="../artifacts/Telegram-11.1-sideload-unsigned.ipa"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload "$IPA"
+          cd ..
+
+          test -s artifacts/Telegram-11.1-sideload-unsigned.ipa
+          shasum -a 256 artifacts/Telegram-11.1-sideload-unsigned.ipa | tee artifacts/Telegram-11.1-sideload-unsigned.ipa.sha256
+
+          # Do not use `unzip | grep -q` with pipefail. grep exits as soon as it
+          # finds a match; unzip can then receive SIGPIPE and make a valid IPA
+          # look like a failed packaging step.
+          LISTING="$RUNNER_TEMP/telegram-11.1-ipa-listing.txt"
+          /usr/bin/unzip -l artifacts/Telegram-11.1-sideload-unsigned.ipa > "$LISTING"
+
+          if ! /usr/bin/grep -Fq 'Payload/Telegram.app/' "$LISTING"; then
+            echo "IPA verification failed: Payload/Telegram.app/ is missing" >&2
+            exit 1
+          fi
+          if /usr/bin/grep -Fq '/_CodeSignature/' "$LISTING"; then
+            echo "IPA verification failed: _CodeSignature is still present" >&2
+            exit 1
+          fi
+          if /usr/bin/grep -Fq 'embedded.mobileprovision' "$LISTING"; then
+            echo "IPA verification failed: embedded.mobileprovision is still present" >&2
+            exit 1
+          fi
+
+          ls -lh artifacts/
+
+      - name: Upload sideload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Telegram-11.1-sideload-unsigned-ipa
+          path: |
+            /Users/Shared/telegram-ios/build/artifacts/Telegram-11.1-sideload-unsigned.ipa
+            /Users/Shared/telegram-ios/build/artifacts/Telegram-11.1-sideload-unsigned.ipa.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
