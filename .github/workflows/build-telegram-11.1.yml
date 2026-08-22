@@ -167,13 +167,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd /Users/Shared/telegram-ios
-          test -f bazel-bin/Telegram/Telegram.ipa
+          SOURCE_DIR=/Users/Shared/telegram-ios
+          SOURCE_IPA="$SOURCE_DIR/bazel-bin/Telegram/Telegram.ipa"
+          cd "$SOURCE_DIR"
+          test -s "$SOURCE_IPA"
 
           rm -rf build/sideload-stage build/artifacts
           mkdir -p build/sideload-stage build/artifacts
           cd build/sideload-stage
-          /usr/bin/ditto -x -k ../../../bazel-bin/Telegram/Telegram.ipa .
+          /usr/bin/ditto -x -k "$SOURCE_IPA" .
 
           APP="$(find Payload -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$APP"
