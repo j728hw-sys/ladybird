@@ -1,0 +1,170 @@
+name: Firefox 154.0 Intel HD 3000 macOS
+
+"on":
+  push:
+    branches:
+      - HD300Driver-Mod-browser
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firefox-hd3000-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-firefox-hd3000:
+    name: Build Firefox 154.0 for Intel HD 3000
+    runs-on: macos-15-intel
+    timeout-minutes: 360
+    env:
+      FIREFOX_TAG: FIREFOX_154_0_RELEASE
+      FIREFOX_SHA: 032a9fc1ac0cc3209f7c142744ba2e40847c8086
+      HD3000_REMOVAL_COMMIT: a6944a13821727f23cdfecc98271d7f723bb6994
+      MOZBUILD_STATE_PATH: ${{ github.workspace }}/.mozbuild
+
+    steps:
+      - name: Checkout HD3000 build branch
+        uses: actions/checkout@v4
+
+      - name: Verify Intel macOS runner
+        run: |
+          set -euxo pipefail
+          test "$(uname -m)" = "x86_64"
+          sw_vers
+          xcodebuild -version
+          xcrun --show-sdk-path
+          df -h /
+
+      - name: Free build disk space
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/* || true
+          sudo rm -rf "$HOME/Library/Developer/CoreSimulator" || true
+          brew cleanup --prune=all || true
+          rm -rf "$HOME/Library/Caches/Homebrew" || true
+          df -h /
+
+      - name: Fetch exact Firefox 154.0 stable source
+        run: |
+          set -euxo pipefail
+          rm -rf firefox
+          git init firefox
+          git -C firefox remote add origin https://github.com/mozilla-firefox/firefox.git
+          git -C firefox fetch --depth=1 --filter=blob:none origin "$FIREFOX_SHA"
+          git -C firefox checkout --detach FETCH_HEAD
+          test "$(git -C firefox rev-parse HEAD)" = "$FIREFOX_SHA"
+          test "$(tr -d '\r\n' < firefox/browser/config/version.txt)" = "154.0"
+
+      - name: Re-verify Mozilla HD3000 regression commit
+        run: |
+          set -euxo pipefail
+          git -C firefox fetch --depth=2 --filter=blob:none origin "$HD3000_REMOVAL_COMMIT"
+
+          git -C firefox show --format= --name-only "$HD3000_REMOVAL_COMMIT" |
+            sed '/^$/d' | sort > /tmp/hd3000-upstream-files.txt
+
+          cat > /tmp/hd3000-expected-files.txt <<'EOF'
+          gfx/gl/GLContext.cpp
+          gfx/gl/GLContext.h
+          gfx/layers/opengl/CompositorOGL.cpp
+          widget/cocoa/GfxInfo.mm
+          EOF
+
+          diff -u /tmp/hd3000-expected-files.txt /tmp/hd3000-upstream-files.txt
+
+          git -C firefox show --format= "$HD3000_REMOVAL_COMMIT" > /tmp/hd3000-removal.diff
+          grep -Fq 'Intel HD Graphics 3000 OpenGL Engine' /tmp/hd3000-removal.diff
+          grep -Fq 'IntelHD3000' /tmp/hd3000-removal.diff
+          grep -Fq 'EXT_texture_compression_s3tc' /tmp/hd3000-removal.diff
+          grep -Fq 'WorkAroundAppleIntelHD3000GraphicsGLDriverBug' /tmp/hd3000-removal.diff
+          grep -Fq 'FEATURE_FAILURE_INTEL_MAC_HD3000_NO_WEBRENDER' /tmp/hd3000-removal.diff
+
+          echo "Canonical Mozilla Bug 1991812 removal verified."
+
+      - name: Restore Intel HD 3000 compatibility safeguards
+        working-directory: firefox
+        run: |
+          set -euxo pipefail
+          python3 ../scripts/restore_hd3000.py
+          git diff --check
+
+      - name: Validate all restored HD3000 paths
+        working-directory: firefox
+        run: |
+          set -euxo pipefail
+
+          git diff --name-only | sort > /tmp/hd3000-modified-files.txt
+          cat > /tmp/hd3000-expected-files.txt <<'EOF'
+          gfx/gl/GLContext.cpp
+          gfx/gl/GLContext.h
+          gfx/layers/opengl/CompositorOGL.cpp
+          widget/cocoa/GfxInfo.mm
+          EOF
+          diff -u /tmp/hd3000-expected-files.txt /tmp/hd3000-modified-files.txt
+
+          grep -Fq 'IntelHD3000,' gfx/gl/GLContext.h
+          grep -Fq '"Intel HD Graphics 3000 OpenGL Engine",' gfx/gl/GLContext.cpp
+          grep -Fq 'Renderer() == GLRenderer::IntelHD3000' gfx/gl/GLContext.cpp
+          grep -Fq 'MarkExtensionUnsupported(EXT_texture_compression_s3tc);' gfx/gl/GLContext.cpp
+
+          test "$(grep -Fc 'static void WorkAroundAppleIntelHD3000GraphicsGLDriverBug(GLContext* aGL)' gfx/layers/opengl/CompositorOGL.cpp)" -eq 1
+          test "$(grep -Fc 'WorkAroundAppleIntelHD3000GraphicsGLDriverBug(mGLContext);' gfx/layers/opengl/CompositorOGL.cpp)" -eq 2
+
+          grep -Fq 'OperatingSystem::MacOS, DeviceFamily::IntelSandyBridge' widget/cocoa/GfxInfo.mm
+          grep -Fq 'FEATURE_FAILURE_INTEL_MAC_HD3000_NO_WEBRENDER' widget/cocoa/GfxInfo.mm
+
+          if grep -Fq 'OperatingSystem::OSX, DeviceFamily::IntelSandyBridge' widget/cocoa/GfxInfo.mm; then
+            echo "ERROR: obsolete Firefox 145-era macOS enum was reintroduced"
+            exit 1
+          fi
+
+          git diff --stat
+          git diff -- gfx/gl/GLContext.h gfx/gl/GLContext.cpp \
+            gfx/layers/opengl/CompositorOGL.cpp widget/cocoa/GfxInfo.mm
+
+      - name: Bootstrap Firefox build toolchain
+        working-directory: firefox
+        run: |
+          set -euxo pipefail
+          ./mach --no-interactive bootstrap --application-choice "Firefox for Desktop"
+
+      - name: Configure Intel Big Sur-compatible build
+        working-directory: firefox
+        run: |
+          set -euxo pipefail
+          cat > mozconfig <<'EOF'
+          mk_add_options AUTOCLOBBER=1
+          mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-firefox-hd3000
+          ac_add_options --enable-application=browser
+          ac_add_options --enable-macos-target=10.15
+          ac_add_options --disable-debug
+          ac_add_options --disable-tests
+          ac_add_options --disable-updater
+          ac_add_options --disable-crashreporter
+          ac_add_options --with-branding=browser/branding/unofficial
+          EOF
+
+          cat mozconfig
+          ./mach configure
+
+      - name: Build Firefox 154.0 HD3000
+        working-directory: firefox
+        run: |
+          set -euxo pipefail
+          ./mach build
+
+      - name: Package macOS DMG
+        working-directory: firefox
+        run: |
+          set -euxo pipefail
+          ./mach package
+          find obj-firefox-hd3000/dist -maxdepth 1 -type f -name '*.dmg' -ls
+
+      - name: Upload Firefox HD3000 DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: Firefox-154.0-HD3000-macOS-x86_64
+          path: firefox/obj-firefox-hd3000/dist/*.dmg
+          if-no-files-found: error
