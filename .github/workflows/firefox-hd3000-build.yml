@@ -42,7 +42,6 @@ jobs:
           set -euxo pipefail
           sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/* || true
           sudo rm -rf "$HOME/Library/Developer/CoreSimulator" || true
-          brew cleanup --prune=all || true
           rm -rf "$HOME/Library/Caches/Homebrew" || true
           df -h /
 
@@ -124,11 +123,13 @@ jobs:
           git diff -- gfx/gl/GLContext.h gfx/gl/GLContext.cpp \
             gfx/layers/opengl/CompositorOGL.cpp widget/cocoa/GfxInfo.mm
 
-      - name: Bootstrap Firefox build toolchain
+      - name: Bootstrap Firefox build toolchain without Homebrew changes
         working-directory: firefox
         run: |
           set -euxo pipefail
-          ./mach --no-interactive bootstrap --application-choice "Firefox for Desktop"
+          ./mach --no-interactive bootstrap \
+            --application-choice "Firefox for Desktop" \
+            --no-system-changes
 
       - name: Configure Intel Big Sur-compatible build
         working-directory: firefox
