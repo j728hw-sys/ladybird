@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $launcherRoot = Join-Path $env:APPDATA ".tlauncher\legacy\Minecraft"
 $javaBin = Join-Path $launcherRoot "jre\java-runtime-epsilon\windows-x64\java-runtime-epsilon\bin"
 $backupDir = Join-Path $javaBin "_MobileGL_original_backup"
-$required = @("opengl32.dll", "libEGL.dll", "libGLESv2.dll", "d3dcompiler_47.dll")
+$required = @("opengl32.dll", "libEGL.dll", "libGLESv2.dll", "d3dcompiler_47.dll", "vulkan-1.dll")
 
 Write-Host "=== Restore Minecraft Java OpenGL files ===" -ForegroundColor Cyan
 
