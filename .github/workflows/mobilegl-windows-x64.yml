@@ -1,0 +1,158 @@
+name: Build MobileGL Windows x64 for Minecraft 26.3
+
+on:
+  push:
+    branches:
+      - mobilegl-windows-build
+    paths:
+      - '.github/workflows/mobilegl-windows-x64.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: MobileGL x64 + ANGLE bundle
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    env:
+      MOBILEGL_COMMIT: fff9d639f06cad2aedb5ac0b93c523d7ca153fdc
+      REVIANGLE_URL: https://github.com/Reviusion/ReviANGLE/releases/download/v2.0.0/ReviANGLE-v2.0.0-win64.zip
+      REVIANGLE_SHA256: b62b26987a4bd823de53606ec70a27afe42b33b4d708b73644af25840674bbf5
+
+    steps:
+      - name: Checkout packaging scripts
+        uses: actions/checkout@v4
+
+      - name: Clone official MobileGL at pinned commit
+        shell: pwsh
+        run: |
+          git config --global core.longpaths true
+          git clone --branch dev --recurse-submodules https://github.com/MobileGL-Dev/MobileGL.git MobileGL
+          Set-Location MobileGL
+          git checkout $env:MOBILEGL_COMMIT
+          git submodule update --init --recursive
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:MOBILEGL_COMMIT) {
+            throw "Wrong MobileGL commit: $actual"
+          }
+          Write-Host "MobileGL commit: $actual"
+
+      - name: Configure MobileGL Windows x64
+        shell: pwsh
+        run: |
+          cmake -S MobileGL -B MobileGL/build -G "Visual Studio 17 2022" -A x64 -DMOBILEGL_BUILD_TEST=OFF -DMOBILEGL_BUILD_BENCHMARK=OFF -DMOBILEGL_BUILD_INTEGRATION_TEST=OFF -DMOBILEGL_BUILD_TRACE_REPLAY=OFF -DMOBILEGL_ENABLE_TRACY=OFF -DMOBILEGL_ENABLE_LTO=OFF -DMOBILEGL_FORCE_RELEASE_OPT=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+
+      - name: Build official MobileGL
+        shell: pwsh
+        run: |
+          cmake --build MobileGL/build --config Release --target MobileGL --parallel 2
+
+      - name: Download ANGLE x64 runtime
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri $env:REVIANGLE_URL -OutFile ReviANGLE.zip
+          $hash = (Get-FileHash -Algorithm SHA256 ReviANGLE.zip).Hash.ToLowerInvariant()
+          Write-Host "ReviANGLE SHA256: $hash"
+          if ($hash -ne $env:REVIANGLE_SHA256) {
+            throw "ANGLE package checksum mismatch"
+          }
+          Expand-Archive -LiteralPath ReviANGLE.zip -DestinationPath ReviANGLE -Force
+
+      - name: Assemble one-click Minecraft bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+
+          $mgl = Get-ChildItem -LiteralPath MobileGL/build -Recurse -File -Filter opengl32.dll | Where-Object { $_.FullName -match '[\\/]Release[\\/]' } | Select-Object -First 1
+          if (-not $mgl) {
+            $mgl = Get-ChildItem -LiteralPath MobileGL/build -Recurse -File -Filter opengl32.dll | Select-Object -First 1
+          }
+          if (-not $mgl) { throw "MobileGL opengl32.dll was not produced" }
+          Copy-Item -LiteralPath $mgl.FullName -Destination package/opengl32.dll -Force
+          Write-Host "MobileGL: $($mgl.FullName)"
+
+          $egl = Get-ChildItem -LiteralPath ReviANGLE -Recurse -File -Filter libEGL.dll | Select-Object -First 1
+          if (-not $egl) { throw "libEGL.dll not found in ANGLE package" }
+          $angleDir = $egl.Directory.FullName
+          foreach ($name in @("libEGL.dll", "libGLESv2.dll", "d3dcompiler_47.dll")) {
+            $src = Join-Path $angleDir $name
+            if (-not (Test-Path -LiteralPath $src)) {
+              $found = Get-ChildItem -LiteralPath ReviANGLE -Recurse -File -Filter $name | Select-Object -First 1
+              if (-not $found) { throw "$name not found in ANGLE package" }
+              $src = $found.FullName
+            }
+            Copy-Item -LiteralPath $src -Destination (Join-Path package $name) -Force
+          }
+
+          Copy-Item .github/mobilegl/START_MINECRAFT_26_3_MOBILEGL.cmd package/START_MINECRAFT_26_3_MOBILEGL.cmd
+          Copy-Item .github/mobilegl/start-mobilegl.ps1 package/start-mobilegl.ps1
+          Copy-Item .github/mobilegl/RESTORE_ORIGINAL_OPENGL.cmd package/RESTORE_ORIGINAL_OPENGL.cmd
+          Copy-Item .github/mobilegl/restore-mobilegl.ps1 package/restore-mobilegl.ps1
+
+          @"
+          MobileGL Windows x64 bundle for Minecraft Java 26.3
+
+          MobileGL upstream:
+          https://github.com/MobileGL-Dev/MobileGL
+          commit: $env:MOBILEGL_COMMIT
+
+          Backend intended for this bundle:
+          DirectGLES -> ANGLE -> Direct3D 11
+
+          ANGLE runtime source:
+          ReviANGLE v2.0.0 win64 bundle
+          archive SHA256: $env:REVIANGLE_SHA256
+
+          Usage:
+          1. Extract the whole ZIP to any normal folder.
+          2. Double-click START_MINECRAFT_26_3_MOBILEGL.cmd.
+          3. In Legacy Launcher start Minecraft 26.3 normally.
+          4. Do not move individual DLLs out of this folder manually.
+
+          The launcher script installs the four graphics DLLs only into
+          Legacy Launcher's bundled Java directory, backing up any files
+          already present there. It does not modify System32 or the Intel
+          graphics driver.
+
+          To undo the local Java changes, run RESTORE_ORIGINAL_OPENGL.cmd.
+          "@ | Set-Content -LiteralPath package/README_RU.txt -Encoding UTF8
+
+      - name: Verify all packaged binaries are x64 PE files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Get-PeMachine([string]$Path) {
+            [byte[]]$b = [IO.File]::ReadAllBytes((Resolve-Path $Path))
+            if ($b.Length -lt 64) { throw "Not a PE file: $Path" }
+            $off = [BitConverter]::ToInt32($b, 0x3c)
+            return [BitConverter]::ToUInt16($b, $off + 4)
+          }
+          foreach ($name in @("opengl32.dll","libEGL.dll","libGLESv2.dll","d3dcompiler_47.dll")) {
+            $p = Join-Path package $name
+            $machine = Get-PeMachine $p
+            $machineHex = ('0x{0:X4}' -f $machine)
+            Write-Host "$name machine=$machineHex"
+            if ($machine -ne 0x8664) { throw "$name is not AMD64/x64" }
+          }
+
+      - name: Write SHA256 manifest
+        shell: pwsh
+        run: |
+          Get-ChildItem package -File | Sort-Object Name | ForEach-Object {
+            $h = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
+            "$h  $($_.Name)"
+          } | Set-Content package/SHA256.txt -Encoding ASCII
+          Get-Content package/SHA256.txt
+
+      - name: Upload ready-to-run bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minecraft-26.3-MobileGL-Windows-x64
+          path: package/*
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 7
