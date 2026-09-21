@@ -1,0 +1,179 @@
+name: Build MobileGL Windows x64 for Minecraft 26.3
+
+on:
+  push:
+    branches:
+      - mobilegl-windows-build
+    paths:
+      - .github/workflows/mobilegl-windows.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Fetch pinned MobileGL source
+        shell: pwsh
+        run: |
+          git clone https://github.com/MobileGL-Dev/MobileGL.git MobileGL
+          Set-Location MobileGL
+          git checkout fff9d639f06cad2aedb5ac0b93c523d7ca153fdc
+          git submodule sync --recursive
+          git submodule update --init --recursive
+
+      - name: Configure MobileGL x64 Release
+        shell: pwsh
+        run: |
+          cmake -S MobileGL -B MobileGL/build-win -G "Visual Studio 17 2022" -A x64 `
+            -DMOBILEGL_BUILD_TEST=OFF `
+            -DMOBILEGL_BUILD_BENCHMARK=OFF `
+            -DMOBILEGL_BUILD_INTEGRATION_TEST=OFF `
+            -DMOBILEGL_BUILD_TRACE_REPLAY=OFF `
+            -DMOBILEGL_ENABLE_TRACY=OFF `
+            -DMOBILEGL_ENABLE_LTO=OFF
+
+      - name: Build MobileGL
+        shell: pwsh
+        run: |
+          cmake --build MobileGL/build-win --config Release --target MobileGL --parallel 4
+
+      - name: Download ANGLE x64 runtime
+        shell: pwsh
+        run: |
+          $url = "https://github.com/Reviusion/ReviANGLE/releases/download/v2.0.0/ReviANGLE-v2.0.0-win64.zip"
+          Invoke-WebRequest -Uri $url -OutFile ReviANGLE.zip
+          $actual = (Get-FileHash ReviANGLE.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expected = "b62b26987a4bd823de53606ec70a27afe42b33b4d708b73644af25840674bbf5"
+          if ($actual -ne $expected) {
+            throw "ReviANGLE SHA256 mismatch: $actual"
+          }
+          Expand-Archive -Path ReviANGLE.zip -DestinationPath ReviANGLE -Force
+
+      - name: Assemble ready-to-run package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path package -Force | Out-Null
+
+          $mgl = Get-ChildItem -Path MobileGL/build-win -Recurse -File -Filter MobileGL.dll | Where-Object { $_.FullName -match "\\Release\\" } | Select-Object -First 1
+          $ogl = Get-ChildItem -Path MobileGL/build-win -Recurse -File -Filter opengl32.dll | Where-Object { $_.FullName -match "\\Release\\" } | Select-Object -First 1
+          if (-not $ogl) { throw "MobileGL opengl32.dll was not produced" }
+
+          Copy-Item $ogl.FullName package/opengl32.dll -Force
+          if ($mgl) { Copy-Item $mgl.FullName package/MobileGL.dll -Force }
+
+          foreach ($name in @("libEGL.dll", "libGLESv2.dll", "d3dcompiler_47.dll")) {
+            $f = Get-ChildItem -Path ReviANGLE -Recurse -File -Filter $name | Select-Object -First 1
+            if (-not $f) { throw "Missing ANGLE runtime file: $name" }
+            Copy-Item $f.FullName (Join-Path package $name) -Force
+          }
+
+          $start = @'
+          @echo off
+          setlocal
+          title Minecraft 26.3 - MobileGL + ANGLE
+
+          set "ROOT=%~dp0"
+          set "MCROOT=%APPDATA%\.tlauncher\legacy\Minecraft"
+          set "JAVABIN=%MCROOT%\jre\java-runtime-epsilon\windows-x64\java-runtime-epsilon\bin"
+          set "LAUNCHER=%MCROOT%\TL.exe"
+
+          if not exist "%LAUNCHER%" (
+            echo ERROR: Legacy Launcher not found:
+            echo %LAUNCHER%
+            echo.
+            pause
+            exit /b 1
+          )
+
+          if not exist "%JAVABIN%\javaw.exe" (
+            echo ERROR: Minecraft Java runtime not found:
+            echo %JAVABIN%
+            echo.
+            pause
+            exit /b 1
+          )
+
+          taskkill /IM TL.exe /F >nul 2>&1
+
+          for %%F in (opengl32.dll libEGL.dll libGLESv2.dll d3dcompiler_47.dll) do (
+            if exist "%JAVABIN%\%%F" if not exist "%JAVABIN%\%%F.before_mobilegl" copy /Y "%JAVABIN%\%%F" "%JAVABIN%\%%F.before_mobilegl" >nul
+            copy /Y "%ROOT%%%F" "%JAVABIN%\%%F" >nul
+            if errorlevel 1 (
+              echo ERROR: Could not install %%F
+              pause
+              exit /b 1
+            )
+          )
+
+          set "MOBILEGL_BACKEND_TYPE=DirectGLES"
+          set "MOBILEGL_LOG_FILE_PATH=%ROOT%mobilegl.log"
+          set "SDL_OPENGL_LIBRARY=%JAVABIN%\opengl32.dll"
+          set "PATH=%JAVABIN%;%ROOT%;%PATH%"
+
+          echo MobileGL DirectGLES + ANGLE prepared.
+          echo Starting Legacy Launcher...
+          echo.
+          start "" "%LAUNCHER%"
+          exit /b 0
+          '@
+          Set-Content -Path package/START_MC26_MOBILEGL.cmd -Value $start -Encoding ASCII
+
+          $restore = @'
+          @echo off
+          setlocal
+          set "MCROOT=%APPDATA%\.tlauncher\legacy\Minecraft"
+          set "JAVABIN=%MCROOT%\jre\java-runtime-epsilon\windows-x64\java-runtime-epsilon\bin"
+
+          taskkill /IM javaw.exe /F >nul 2>&1
+          taskkill /IM TL.exe /F >nul 2>&1
+
+          for %%F in (opengl32.dll libEGL.dll libGLESv2.dll d3dcompiler_47.dll) do (
+            del /Q "%JAVABIN%\%%F" >nul 2>&1
+            if exist "%JAVABIN%\%%F.before_mobilegl" move /Y "%JAVABIN%\%%F.before_mobilegl" "%JAVABIN%\%%F" >nul
+          )
+
+          echo MobileGL files removed from the Minecraft Java runtime.
+          pause
+          '@
+          Set-Content -Path package/RESTORE_ORIGINAL_OPENGL.cmd -Value $restore -Encoding ASCII
+
+          $info = @"
+          Minecraft 26.3 MobileGL package
+          MobileGL upstream: https://github.com/MobileGL-Dev/MobileGL
+          MobileGL commit: fff9d639f06cad2aedb5ac0b93c523d7ca153fdc
+          Backend: DirectGLES
+          GLES implementation: ANGLE runtime taken from ReviANGLE v2.0.0 win64
+          ReviANGLE source: https://github.com/Reviusion/ReviANGLE/releases/tag/v2.0.0
+
+          Usage:
+          1. Extract this artifact completely.
+          2. Double-click START_MC26_MOBILEGL.cmd.
+          3. In Legacy Launcher start Minecraft 26.3 normally.
+          4. mobilegl.log will be written beside the CMD file.
+
+          The script only installs the four graphics DLLs into Legacy Launcher's bundled Java runtime.
+          RESTORE_ORIGINAL_OPENGL.cmd removes them and restores any previous copies.
+          "@
+          Set-Content -Path package/README_FIRST.txt -Value $info -Encoding UTF8
+
+          $hashLines = foreach ($f in Get-ChildItem package -File | Where-Object { $_.Extension -eq ".dll" }) {
+            $h = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$h  $($f.Name)"
+          }
+          Set-Content -Path package/SHA256.txt -Value $hashLines -Encoding ASCII
+
+          Get-ChildItem package | Format-Table Name,Length
+
+      - name: Upload ready package
+        uses: actions/upload-artifact@v4
+        with:
+          name: MC26-MobileGL-HD2000
+          path: package/*
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 30
