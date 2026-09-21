@@ -61,6 +61,14 @@ jobs:
           }
           Write-Host "MobileGL commit: $actual"
 
+      - name: Apply HD 2000 FBO context-generation fix
+        shell: pwsh
+        run: |
+          Set-Location MobileGL
+          git apply "$env:GITHUB_WORKSPACE\.github\mobilegl\fix-fbo-context-generation.patch"
+          git diff --check
+          git diff -- MobileGL/MG_Backend/DirectGLES/Managers.cpp
+
       - name: Fetch glslang pinned optimizer dependencies
         shell: pwsh
         run: |
