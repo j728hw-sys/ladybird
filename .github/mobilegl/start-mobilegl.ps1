@@ -9,7 +9,8 @@ $required = @(
     "opengl32.dll",
     "libEGL.dll",
     "libGLESv2.dll",
-    "d3dcompiler_47.dll"
+    "d3dcompiler_47.dll",
+    "vulkan-1.dll"
 )
 
 Write-Host "=== Minecraft 26.3 + MobileGL / ANGLE ===" -ForegroundColor Cyan
@@ -76,8 +77,12 @@ Write-Host "[3/4] Selecting DirectGLES -> ANGLE -> D3D11..." -ForegroundColor Ye
 $env:MOBILEGL_BACKEND_TYPE = "DirectGLES"
 $env:MOBILEGL_LOG_FILE_PATH = Join-Path $bundle "mobilegl.log"
 $env:SDL_OPENGL_LIBRARY = Join-Path $javaBin "opengl32.dll"
-$env:PATH = "$javaBin;$env:PATH"
+$env:PATH = "$javaBin;$bundle;$env:PATH"
 
+# vulkan-1.dll is included only because the current Windows MobileGL binary
+# imports the Vulkan loader at DLL load time. DirectVulkan is NOT selected.
+# Rendering is still DirectGLES -> ANGLE -> D3D11.
+#
 # Keep the Intel legacy-driver compatibility SDB already installed.
 # This launcher does not modify System32, the Intel driver, or global environment variables.
 
