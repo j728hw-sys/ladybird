@@ -20,8 +20,8 @@ jobs:
     env:
       MOBILEGL_COMMIT: fff9d639f06cad2aedb5ac0b93c523d7ca153fdc
       VULKAN_SDK_VERSION: 1.4.357.0
-      REVIANGLE_URL: https://github.com/Reviusion/ReviANGLE/releases/download/v2.0.0/ReviANGLE-v2.0.0-win64.zip
-      REVIANGLE_SHA256: b62b26987a4bd823de53606ec70a27afe42b33b4d708b73644af25840674bbf5
+      REVIANGLE_URL: https://github.com/Reviusion/ReviANGLE/releases/download/v1.0.2/ReviANGLE-v1.0.2-win64.zip
+      REVIANGLE_SHA256: c5ec7d846c1a89e02ed0fb2a2d1a064909a9c6c5c4df01e12d0016b8a5c02bef
 
     steps:
       - name: Checkout packaging scripts
@@ -153,7 +153,7 @@ jobs:
           DirectGLES -> ANGLE -> Direct3D 11
 
           ANGLE runtime source:
-          ReviANGLE v2.0.0 win64 bundle
+          ReviANGLE v1.0.2 win64 bundle (release explicitly validated all ANGLE runtime DLLs as x64)
           archive SHA256: $env:REVIANGLE_SHA256
 
           Usage:
@@ -187,6 +187,43 @@ jobs:
             Write-Host "$name machine=$machineHex"
             if ($machine -ne 0x8664) { throw "$name is not AMD64/x64" }
           }
+
+      - name: Build and run official MobileGL WGL smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere)) { throw "vswhere.exe not found" }
+          $vs = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+          if (-not $vs) { throw "Visual Studio C++ toolchain not found" }
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+          if (-not (Test-Path -LiteralPath $vcvars)) { throw "vcvars64.bat not found: $vcvars" }
+
+          Copy-Item MobileGL/tools/wgl-smoke/wgl_smoke.cpp package/wgl_smoke.cpp -Force
+
+          $compile = 'call "' + $vcvars + '" && cl /nologo /EHsc /W3 "package\wgl_smoke.cpp" user32.lib gdi32.lib /Fe:"package\wgl_smoke.exe"'
+          cmd.exe /d /s /c $compile
+          if ($LASTEXITCODE -ne 0) { throw "wgl_smoke.cpp compilation failed with exit code $LASTEXITCODE" }
+
+          Push-Location package
+          try {
+            $env:MOBILEGL_BACKEND_TYPE = "DirectGLES"
+            $env:MOBILEGL_LOG_FILE_PATH = (Join-Path $PWD "wgl-smoke-mobilegl.log")
+            $env:PATH = "$PWD;$env:PATH"
+
+            .\wgl_smoke.exe
+            if ($LASTEXITCODE -ne 0) { throw "Official MobileGL WGL smoke test failed with exit code $LASTEXITCODE" }
+
+            if (Test-Path -LiteralPath $env:MOBILEGL_LOG_FILE_PATH) {
+              Write-Host "--- MobileGL WGL smoke log tail ---"
+              Get-Content -LiteralPath $env:MOBILEGL_LOG_FILE_PATH -Tail 120
+            }
+          } finally {
+            Pop-Location
+          }
+
+          Remove-Item package/wgl_smoke.cpp,package/wgl_smoke.exe -Force -ErrorAction SilentlyContinue
 
       - name: Smoke-load packaged MobileGL DLL
         shell: pwsh
