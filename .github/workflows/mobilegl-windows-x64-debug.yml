@@ -1,0 +1,273 @@
+name: Build MobileGL Windows x64 DEBUG for Minecraft 26.3
+
+on:
+  push:
+    branches:
+      - mobilegl-windows-build
+    paths:
+      - '.github/workflows/mobilegl-windows-x64-debug.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: MobileGL x64 DEBUG + ANGLE bundle
+    runs-on: windows-2022
+    timeout-minutes: 75
+
+    env:
+      MOBILEGL_COMMIT: fff9d639f06cad2aedb5ac0b93c523d7ca153fdc
+      VULKAN_SDK_VERSION: 1.4.357.0
+      REVIANGLE_URL: https://github.com/Reviusion/ReviANGLE/releases/download/v1.0.2/ReviANGLE-v1.0.2-win64.zip
+      REVIANGLE_SHA256: c5ec7d846c1a89e02ed0fb2a2d1a064909a9c6c5c4df01e12d0016b8a5c02bef
+
+    steps:
+      - name: Checkout packaging scripts
+        uses: actions/checkout@v4
+
+      - name: Prepare lightweight Vulkan headers and loader
+        uses: humbletim/setup-vulkan-sdk@c25f41106918cde0bf347e6f201277392b3a9e9d
+        with:
+          vulkan-query-version: ${{ env.VULKAN_SDK_VERSION }}
+          vulkan-components: Vulkan-Headers, Vulkan-Loader
+          vulkan-use-cache: true
+
+      - name: Verify Vulkan SDK inputs
+        shell: pwsh
+        run: |
+          Write-Host "VULKAN_SDK=$env:VULKAN_SDK"
+          if (-not $env:VULKAN_SDK) { throw "VULKAN_SDK was not exported" }
+          $inc = Join-Path $env:VULKAN_SDK "include\\vulkan\\vulkan.h"
+          $lib = Join-Path $env:VULKAN_SDK "lib\\vulkan-1.lib"
+          $dll = Join-Path $env:VULKAN_SDK "bin\\vulkan-1.dll"
+          foreach ($p in @($inc, $lib, $dll)) {
+            Write-Host "checking $p"
+            if (-not (Test-Path -LiteralPath $p)) { throw "Missing Vulkan SDK component: $p" }
+          }
+
+      - name: Clone official MobileGL at pinned commit
+        shell: pwsh
+        run: |
+          git config --global core.longpaths true
+          git clone --branch dev --recurse-submodules https://github.com/MobileGL-Dev/MobileGL.git MobileGL
+          Set-Location MobileGL
+          git checkout $env:MOBILEGL_COMMIT
+          git submodule update --init --recursive
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:MOBILEGL_COMMIT) {
+            throw "Wrong MobileGL commit: $actual"
+          }
+          Write-Host "MobileGL commit: $actual"
+
+      - name: Fetch glslang pinned optimizer dependencies
+        shell: pwsh
+        run: |
+          Set-Location MobileGL/3rdparty/glslang
+          python update_glslang_sources.py
+
+      - name: Configure MobileGL Windows x64
+        shell: pwsh
+        env:
+          CL: /DBUILD_GL32 /DGL_NO_STDCALL
+        run: |
+          $vulkanLib = Join-Path $env:VULKAN_SDK "lib\\vulkan-1.lib"
+          $vulkanInc = Join-Path $env:VULKAN_SDK "include"
+          cmake -S MobileGL -B MobileGL/build -G "Visual Studio 17 2022" -A x64 -DMOBILEGL_LOG_ACTIVE_LEVEL=MOBILEGL_LOG_LEVEL_DEBUG -DMOBILEGL_BUILD_TEST=OFF -DMOBILEGL_BUILD_BENCHMARK=OFF -DMOBILEGL_BUILD_INTEGRATION_TEST=OFF -DMOBILEGL_BUILD_TRACE_REPLAY=OFF -DMOBILEGL_ENABLE_TRACY=OFF -DMOBILEGL_ENABLE_LTO=OFF -DMOBILEGL_FORCE_RELEASE_OPT=ON "-DVulkan_LIBRARY=$vulkanLib" "-DVulkan_INCLUDE_DIR=$vulkanInc"
+          Write-Host "--- Vulkan entries from CMakeCache.txt ---"
+          Get-Content MobileGL/build/CMakeCache.txt | Select-String -Pattern '^Vulkan_(INCLUDE_DIR|LIBRARY):'
+          $vkLine = Get-Content MobileGL/build/CMakeCache.txt | Where-Object { $_ -like 'Vulkan_LIBRARY:FILEPATH=*' } | Select-Object -First 1
+          if (-not $vkLine) { throw "CMake cache contains no Vulkan_LIBRARY entry" }
+          $vkConfigured = $vkLine.Substring('Vulkan_LIBRARY:FILEPATH='.Length)
+          if (-not (Test-Path -LiteralPath $vkConfigured)) { throw "Configured Vulkan library does not exist: $vkConfigured" }
+          Write-Host "CMake Vulkan library verified: $vkConfigured"
+
+      - name: Build official MobileGL
+        shell: pwsh
+        env:
+          CL: /DBUILD_GL32 /DGL_NO_STDCALL
+        run: |
+          cmake --build MobileGL/build --config Release --target MobileGL --parallel 2
+          $mgl = Get-ChildItem -LiteralPath MobileGL/build -Recurse -File -Filter MobileGL.dll | Where-Object { $_.FullName -match '[\\\\/]Release[\\\\/]' } | Select-Object -First 1
+          $ogl = Get-ChildItem -LiteralPath MobileGL/build -Recurse -File -Filter opengl32.dll | Where-Object { $_.FullName -match '[\\\\/]Release[\\\\/]' } | Select-Object -First 1
+          if (-not $mgl) { throw "MobileGL.dll was not produced" }
+          if (-not $ogl) { throw "opengl32.dll drop-in copy was not produced" }
+          Get-Item $mgl.FullName,$ogl.FullName | Format-Table FullName,Length
+
+      - name: Download ANGLE x64 runtime
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri $env:REVIANGLE_URL -OutFile ReviANGLE.zip
+          $hash = (Get-FileHash -Algorithm SHA256 ReviANGLE.zip).Hash.ToLowerInvariant()
+          Write-Host "ReviANGLE SHA256: $hash"
+          if ($hash -ne $env:REVIANGLE_SHA256) {
+            throw "ANGLE package checksum mismatch"
+          }
+          Expand-Archive -LiteralPath ReviANGLE.zip -DestinationPath ReviANGLE -Force
+
+      - name: Assemble one-click Minecraft bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+
+          $mgl = Get-ChildItem -LiteralPath MobileGL/build -Recurse -File -Filter opengl32.dll | Where-Object { $_.FullName -match '[\\/]Release[\\/]' } | Select-Object -First 1
+          if (-not $mgl) {
+            $mgl = Get-ChildItem -LiteralPath MobileGL/build -Recurse -File -Filter opengl32.dll | Select-Object -First 1
+          }
+          if (-not $mgl) { throw "MobileGL opengl32.dll was not produced" }
+          Copy-Item -LiteralPath $mgl.FullName -Destination package/opengl32.dll -Force
+          Write-Host "MobileGL: $($mgl.FullName)"
+
+          $egl = Get-ChildItem -LiteralPath ReviANGLE -Recurse -File -Filter libEGL.dll | Select-Object -First 1
+          if (-not $egl) { throw "libEGL.dll not found in ANGLE package" }
+          $angleDir = $egl.Directory.FullName
+          foreach ($name in @("libEGL.dll", "libGLESv2.dll", "d3dcompiler_47.dll")) {
+            $src = Join-Path $angleDir $name
+            if (-not (Test-Path -LiteralPath $src)) {
+              $found = Get-ChildItem -LiteralPath ReviANGLE -Recurse -File -Filter $name | Select-Object -First 1
+              if (-not $found) { throw "$name not found in ANGLE package" }
+              $src = $found.FullName
+            }
+            Copy-Item -LiteralPath $src -Destination (Join-Path package $name) -Force
+          }
+
+          $vkRuntime = Join-Path $env:VULKAN_SDK "bin\\vulkan-1.dll"
+          if (-not (Test-Path -LiteralPath $vkRuntime)) { throw "vulkan-1.dll not found at $vkRuntime" }
+          Copy-Item -LiteralPath $vkRuntime -Destination package/vulkan-1.dll -Force
+
+          Copy-Item .github/mobilegl/START_MINECRAFT_26_3_MOBILEGL.cmd package/START_MINECRAFT_26_3_MOBILEGL.cmd
+          Copy-Item .github/mobilegl/start-mobilegl.ps1 package/start-mobilegl.ps1
+          Copy-Item .github/mobilegl/RESTORE_ORIGINAL_OPENGL.cmd package/RESTORE_ORIGINAL_OPENGL.cmd
+          Copy-Item .github/mobilegl/restore-mobilegl.ps1 package/restore-mobilegl.ps1
+
+          @"
+          MobileGL Windows x64 DEBUG bundle for Minecraft Java 26.3
+
+          MobileGL upstream:
+          https://github.com/MobileGL-Dev/MobileGL
+          commit: $env:MOBILEGL_COMMIT
+
+          Diagnostic build: DEBUG logging enabled to capture shader/program/backend failures.
+
+          Backend intended for this bundle:
+          DirectGLES -> ANGLE -> Direct3D 11
+
+          ANGLE runtime source:
+          ReviANGLE v1.0.2 win64 bundle (release explicitly validated all ANGLE runtime DLLs as x64)
+          archive SHA256: $env:REVIANGLE_SHA256
+
+          Usage:
+          1. Extract the whole ZIP to any normal folder.
+          2. Double-click START_MINECRAFT_26_3_MOBILEGL.cmd.
+          3. In Legacy Launcher start Minecraft 26.3 normally.
+          4. Do not move individual DLLs out of this folder manually.
+
+          The launcher script installs the five graphics/runtime DLLs only into
+          Legacy Launcher's bundled Java directory, backing up any files
+          already present there. It does not modify System32 or the Intel
+          graphics driver.
+
+          To undo the local Java changes, run RESTORE_ORIGINAL_OPENGL.cmd.
+          "@ | Set-Content -LiteralPath package/README_RU.txt -Encoding UTF8
+
+      - name: Verify all packaged binaries are x64 PE files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Get-PeMachine([string]$Path) {
+            [byte[]]$b = [IO.File]::ReadAllBytes((Resolve-Path $Path))
+            if ($b.Length -lt 64) { throw "Not a PE file: $Path" }
+            $off = [BitConverter]::ToInt32($b, 0x3c)
+            return [BitConverter]::ToUInt16($b, $off + 4)
+          }
+          foreach ($name in @("opengl32.dll","libEGL.dll","libGLESv2.dll","d3dcompiler_47.dll","vulkan-1.dll")) {
+            $p = Join-Path package $name
+            $machine = Get-PeMachine $p
+            $machineHex = ('0x{0:X4}' -f $machine)
+            Write-Host "$name machine=$machineHex"
+            if ($machine -ne 0x8664) { throw "$name is not AMD64/x64" }
+          }
+
+      - name: Build and run official MobileGL WGL smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere)) { throw "vswhere.exe not found" }
+          $vs = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+          if (-not $vs) { throw "Visual Studio C++ toolchain not found" }
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+          if (-not (Test-Path -LiteralPath $vcvars)) { throw "vcvars64.bat not found: $vcvars" }
+
+          Copy-Item MobileGL/tools/wgl-smoke/wgl_smoke.cpp package/wgl_smoke.cpp -Force
+
+          $compile = 'call "' + $vcvars + '" && cl /nologo /EHsc /W3 "package\wgl_smoke.cpp" user32.lib gdi32.lib /Fe:"package\wgl_smoke.exe"'
+          cmd.exe /d /s /c $compile
+          if ($LASTEXITCODE -ne 0) { throw "wgl_smoke.cpp compilation failed with exit code $LASTEXITCODE" }
+
+          Push-Location package
+          try {
+            $env:MOBILEGL_BACKEND_TYPE = "DirectGLES"
+            $env:MOBILEGL_LOG_FILE_PATH = (Join-Path $PWD "wgl-smoke-mobilegl.log")
+            $env:PATH = "$PWD;$env:PATH"
+
+            .\wgl_smoke.exe
+            if ($LASTEXITCODE -ne 0) { throw "Official MobileGL WGL smoke test failed with exit code $LASTEXITCODE" }
+
+            if (Test-Path -LiteralPath $env:MOBILEGL_LOG_FILE_PATH) {
+              Write-Host "--- MobileGL WGL smoke log tail ---"
+              Get-Content -LiteralPath $env:MOBILEGL_LOG_FILE_PATH -Tail 120
+            }
+          } finally {
+            Pop-Location
+          }
+
+          Remove-Item package/wgl_smoke.cpp,package/wgl_smoke.exe -Force -ErrorAction SilentlyContinue
+
+      - name: Smoke-load packaged MobileGL DLL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-Location package
+          $env:MOBILEGL_BACKEND_TYPE = "DirectGLES"
+          $env:PATH = "$PWD;$env:PATH"
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class NativeLoader {
+              [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+              public static extern IntPtr LoadLibraryW(string lpFileName);
+              [DllImport("kernel32.dll", SetLastError=true)]
+              [return: MarshalAs(UnmanagedType.Bool)]
+              public static extern bool FreeLibrary(IntPtr hModule);
+          }
+          '@
+          $dll = (Resolve-Path ".\\opengl32.dll").Path
+          $h = [NativeLoader]::LoadLibraryW($dll)
+          if ($h -eq [IntPtr]::Zero) {
+            $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            throw "LoadLibrary(opengl32.dll) failed with Win32 error $err"
+          }
+          Write-Host "LoadLibrary(opengl32.dll) succeeded: $h"
+          [void][NativeLoader]::FreeLibrary($h)
+
+      - name: Write SHA256 manifest
+        shell: pwsh
+        run: |
+          Get-ChildItem package -File | Sort-Object Name | ForEach-Object {
+            $h = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
+            "$h  $($_.Name)"
+          } | Set-Content package/SHA256.txt -Encoding ASCII
+          Get-Content package/SHA256.txt
+
+      - name: Upload ready-to-run bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minecraft-26.3-MobileGL-Windows-x64-DEBUG
+          path: package/*
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 7
