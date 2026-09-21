@@ -1,8 +1,7 @@
 diff --git a/MobileGL/MG_Backend/DirectGLES/Managers.cpp b/MobileGL/MG_Backend/DirectGLES/Managers.cpp
-index 0000000..0000000 100644
 --- a/MobileGL/MG_Backend/DirectGLES/Managers.cpp
 +++ b/MobileGL/MG_Backend/DirectGLES/Managers.cpp
-@@ -5634,6 +5634,29 @@
+@@ -5634,7 +5634,32 @@
              if (!stateFBOObject) {
                  MGLOG_E_ONCE("State FBO object is null, cannot sync to backend.");
                  return;
