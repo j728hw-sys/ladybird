@@ -40,6 +40,12 @@ jobs:
           }
           Write-Host "MobileGL commit: $actual"
 
+      - name: Fetch glslang pinned optimizer dependencies
+        shell: pwsh
+        run: |
+          Set-Location MobileGL/3rdparty/glslang
+          python update_glslang_sources.py
+
       - name: Configure MobileGL Windows x64
         shell: pwsh
         run: |
