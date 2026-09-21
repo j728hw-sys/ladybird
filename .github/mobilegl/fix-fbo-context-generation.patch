@@ -1,0 +1,38 @@
+diff --git a/MobileGL/MG_Backend/DirectGLES/Managers.cpp b/MobileGL/MG_Backend/DirectGLES/Managers.cpp
+index 0000000..0000000 100644
+--- a/MobileGL/MG_Backend/DirectGLES/Managers.cpp
++++ b/MobileGL/MG_Backend/DirectGLES/Managers.cpp
+@@ -5634,6 +5634,29 @@
+             if (!stateFBOObject) {
+                 MGLOG_E_ONCE("State FBO object is null, cannot sync to backend.");
+                 return;
+             }
++
++            // A frontend FBO twin can survive an EGL context recreation. Its numeric
++            // GLES framebuffer name belongs to the dead context and may be recycled by
++            // the new context for another frontend FBO. Reusing the stale name makes two
++            // distinct frontend FBOs alias one physical GLES FBO: syncing one can detach
++            // the other's Color0 while the latter's attachment-version memo still says
++            // "clean". Minecraft 26.3 then shows the initial clear colour but every real
++            // draw renders into an FBO with no colour attachment.
++            if (m_contextGeneration != g_backendContextGeneration) {
++                const Uint staleId = m_backendFBOId;
++                if (staleId != 0) {
++                    // Do not delete staleId: it belongs to the dead context. Only scrub
++                    // the binding shadow so a recycled numeric name cannot false-skip.
++                    NoteFramebufferIdDeleted(staleId);
++                }
++                m_backendFBOId = 0;
++                g_GLESFuncs.glGenFramebuffers(1, &m_backendFBOId);
++                m_contextGeneration = g_backendContextGeneration;
++                InvalidateSyncedState();
++                if (m_backendFBOId == 0) {
++                    MGLOG_E_ONCE("Failed to re-create framebuffer object after EGL context recreation.");
++                    return;
++                }
++                MGLOG_I("Re-created stale framebuffer object %u as %u for backend context generation %u.",
++                        staleId, m_backendFBOId, m_contextGeneration);
++            }
+             MGLOG_D("Syncing FBO with backend ID %u to backend for state ID %u, as %s FBO", m_backendFBOId,
+                     stateFBOObject->GetExternalIndex(), (asTarget == FramebufferTarget::Draw ? "DRAW" : "READ"));
+             GLenum glFBOTarget = MG_Util::ConvertFramebufferTargetToGLEnum(asTarget);
