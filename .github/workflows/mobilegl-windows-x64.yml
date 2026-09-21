@@ -21,6 +21,8 @@ jobs:
       MOBILEGL_COMMIT: fff9d639f06cad2aedb5ac0b93c523d7ca153fdc
       REVIANGLE_URL: https://github.com/Reviusion/ReviANGLE/releases/download/v2.0.0/ReviANGLE-v2.0.0-win64.zip
       REVIANGLE_SHA256: b62b26987a4bd823de53606ec70a27afe42b33b4d708b73644af25840674bbf5
+      # Match MobileGL's own Win32 GL definitions: export, C linkage, no stdcall mismatch.
+      CL: /DBUILD_GL32 /DGL_NO_STDCALL
 
     steps:
       - name: Checkout packaging scripts
@@ -49,7 +51,7 @@ jobs:
       - name: Configure MobileGL Windows x64
         shell: pwsh
         run: |
-          cmake -S MobileGL -B MobileGL/build -G "Visual Studio 17 2022" -A x64 -DMOBILEGL_BUILD_TEST=OFF -DMOBILEGL_BUILD_BENCHMARK=OFF -DMOBILEGL_BUILD_INTEGRATION_TEST=OFF -DMOBILEGL_BUILD_TRACE_REPLAY=OFF -DMOBILEGL_ENABLE_TRACY=OFF -DMOBILEGL_ENABLE_LTO=OFF -DMOBILEGL_FORCE_RELEASE_OPT=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          cmake -S MobileGL -B MobileGL/build -G "Visual Studio 17 2022" -A x64 -DMOBILEGL_BUILD_TEST=OFF -DMOBILEGL_BUILD_BENCHMARK=OFF -DMOBILEGL_BUILD_INTEGRATION_TEST=OFF -DMOBILEGL_BUILD_TRACE_REPLAY=OFF -DMOBILEGL_ENABLE_TRACY=OFF -DMOBILEGL_ENABLE_LTO=OFF -DMOBILEGL_FORCE_RELEASE_OPT=ON
 
       - name: Build official MobileGL
         shell: pwsh
