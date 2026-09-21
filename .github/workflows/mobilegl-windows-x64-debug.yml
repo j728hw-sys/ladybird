@@ -61,13 +61,35 @@ jobs:
           }
           Write-Host "MobileGL commit: $actual"
 
-      - name: Apply HD 2000 FBO context-generation fix
+      - name: Apply and verify HD 2000 FBO context-generation fix
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           Set-Location MobileGL
-          git apply "$env:GITHUB_WORKSPACE\.github\mobilegl\fix-fbo-context-generation.patch"
+          $patch = "$env:GITHUB_WORKSPACE\.github\mobilegl\fix-fbo-context-generation.patch"
+
+          git apply --check $patch
+          if ($LASTEXITCODE -ne 0) { throw "FBO patch preflight failed with exit code $LASTEXITCODE" }
+
+          git apply $patch
+          if ($LASTEXITCODE -ne 0) { throw "FBO patch application failed with exit code $LASTEXITCODE" }
+
           git diff --check
-          git diff -- MobileGL/MG_Backend/DirectGLES/Managers.cpp
+          if ($LASTEXITCODE -ne 0) { throw "Patched source failed git diff --check" }
+
+          $srcPath = "MobileGL/MG_Backend/DirectGLES/Managers.cpp"
+          $src = Get-Content -LiteralPath $srcPath -Raw
+          $marker = "Re-created stale framebuffer object"
+          if (-not $src.Contains($marker)) {
+            throw "FBO patch marker is absent from Managers.cpp after git apply"
+          }
+
+          $diff = git diff -- $srcPath
+          if ($LASTEXITCODE -ne 0) { throw "git diff failed" }
+          if (-not (($diff -join "`n").Contains($marker))) {
+            throw "FBO patch is not present in git diff"
+          }
+          $diff
 
       - name: Fetch glslang pinned optimizer dependencies
         shell: pwsh
@@ -101,6 +123,14 @@ jobs:
           $ogl = Get-ChildItem -LiteralPath MobileGL/build -Recurse -File -Filter opengl32.dll | Where-Object { $_.FullName -match '[\\\\/]Release[\\\\/]' } | Select-Object -First 1
           if (-not $mgl) { throw "MobileGL.dll was not produced" }
           if (-not $ogl) { throw "opengl32.dll drop-in copy was not produced" }
+
+          $marker = "Re-created stale framebuffer object"
+          $binaryText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($ogl.FullName))
+          if (-not $binaryText.Contains($marker)) {
+            throw "Built opengl32.dll does NOT contain the HD 2000 FBO fix marker"
+          }
+          Write-Host "Verified: built opengl32.dll contains the HD 2000 FBO fix marker."
+
           Get-Item $mgl.FullName,$ogl.FullName | Format-Table FullName,Length
 
       - name: Download ANGLE x64 runtime
