@@ -1,0 +1,321 @@
+name: Build Minecraft 26.3 CPU llvmpipe bundle
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - mobilegl-windows-build
+    paths:
+      - ".github/workflows/minecraft-26.3-cpu-llvmpipe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout packaging scripts
+        uses: actions/checkout@v4
+
+      - name: Download Mesa3D 26.2.0 MSVC
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/pal1000/mesa-dist-win/releases/download/26.2.0/mesa3d-26.2.0-release-msvc.7z"
+          Invoke-WebRequest -Uri $url -OutFile mesa.7z
+          if (-not (Test-Path mesa.7z)) { throw "Mesa archive download failed" }
+          Get-Item mesa.7z | Format-List FullName,Length
+
+      - name: Extract Mesa3D
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          7z x mesa.7z -omesa -y | Out-Host
+          $ogl = Get-ChildItem mesa -Recurse -File -Filter opengl32.dll | Where-Object { $_.FullName -match "\\x64\\" } | Select-Object -First 1
+          $gallium = Get-ChildItem mesa -Recurse -File -Filter libgallium_wgl.dll | Where-Object { $_.FullName -match "\\x64\\" } | Select-Object -First 1
+          if (-not $ogl) { throw "x64 opengl32.dll not found in Mesa package" }
+          if (-not $gallium) { throw "x64 libgallium_wgl.dll not found in Mesa package" }
+          Write-Host "Mesa opengl32: $($ogl.FullName)"
+          Write-Host "Mesa gallium:  $($gallium.FullName)"
+
+      - name: Assemble CPU-only bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force package | Out-Null
+
+          $x64Dir = (Get-ChildItem mesa -Recurse -File -Filter opengl32.dll |
+                     Where-Object { $_.FullName -match "\\x64\\" } |
+                     Select-Object -First 1).Directory.FullName
+
+          foreach ($name in @("opengl32.dll","opengl32sw.dll","libgallium_wgl.dll","libglapi.dll")) {
+            $p = Join-Path $x64Dir $name
+            if (Test-Path $p) { Copy-Item $p package\$name -Force }
+          }
+
+          if (-not (Test-Path package\opengl32.dll)) { throw "opengl32.dll missing from package" }
+          if (-not (Test-Path package\libgallium_wgl.dll)) { throw "libgallium_wgl.dll missing from package" }
+
+          @'
+@echo off
+setlocal
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-cpu-llvmpipe.ps1"
+if errorlevel 1 (
+  echo.
+  echo CPU llvmpipe launcher failed. Error code: %errorlevel%
+  pause
+)
+'@ | Set-Content package\START_MINECRAFT_26_3_CPU_640x360.cmd -Encoding ASCII
+
+          @'
+param()
+
+$ErrorActionPreference = "Stop"
+$bundle = Split-Path -Parent $MyInvocation.MyCommand.Path
+$launcherRoot = Join-Path $env:APPDATA ".tlauncher\legacy\Minecraft"
+$launcher = Join-Path $launcherRoot "TL.exe"
+
+if (-not (Test-Path -LiteralPath $launcher)) {
+    throw "Legacy Launcher not found: $launcher"
+}
+
+$required = @("opengl32.dll","libgallium_wgl.dll")
+foreach ($name in $required) {
+    if (-not (Test-Path -LiteralPath (Join-Path $bundle $name))) {
+        throw "Missing bundle file: $name"
+    }
+}
+
+$javaBins = @(
+    Get-ChildItem -LiteralPath $launcherRoot -Recurse -File -Filter javaw.exe -ErrorAction SilentlyContinue |
+    Where-Object { $_.Directory.Name -ieq "bin" } |
+    ForEach-Object { $_.Directory.FullName } |
+    Sort-Object -Unique
+)
+
+if ($javaBins.Count -eq 0) {
+    throw "No Legacy Launcher Java bin directory was found."
+}
+
+foreach ($javaBin in $javaBins) {
+    $backup = Join-Path $javaBin "_CPU_llvmpipe_original_backup"
+    New-Item -ItemType Directory -Force $backup | Out-Null
+
+    foreach ($name in @("opengl32.dll","opengl32sw.dll","libgallium_wgl.dll","libglapi.dll",
+                        "libEGL.dll","libGLESv2.dll","d3dcompiler_47.dll","vulkan-1.dll")) {
+        $dst = Join-Path $javaBin $name
+        if ((Test-Path -LiteralPath $dst) -and -not (Test-Path -LiteralPath (Join-Path $backup $name))) {
+            Copy-Item -LiteralPath $dst -Destination (Join-Path $backup $name) -Force
+        }
+    }
+
+    foreach ($name in @("libEGL.dll","libGLESv2.dll","d3dcompiler_47.dll","vulkan-1.dll")) {
+        $dst = Join-Path $javaBin $name
+        if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Force }
+    }
+
+    foreach ($name in @("opengl32.dll","opengl32sw.dll","libgallium_wgl.dll","libglapi.dll")) {
+        $src = Join-Path $bundle $name
+        if (Test-Path -LiteralPath $src) {
+            Copy-Item -LiteralPath $src -Destination (Join-Path $javaBin $name) -Force
+        }
+    }
+}
+
+$env:GALLIUM_DRIVER = "llvmpipe"
+$env:LIBGL_ALWAYS_SOFTWARE = "true"
+$env:MESA_LOADER_DRIVER_OVERRIDE = "llvmpipe"
+$env:LP_NUM_THREADS = "4"
+$env:PATH = "$bundle;$env:PATH"
+
+$optionCandidates = @()
+$common = Join-Path $env:APPDATA ".minecraft\options.txt"
+if (Test-Path -LiteralPath $common) { $optionCandidates += Get-Item -LiteralPath $common }
+$optionCandidates += Get-ChildItem -LiteralPath $launcherRoot -Recurse -File -Filter options.txt -ErrorAction SilentlyContinue
+$optionCandidates = $optionCandidates | Sort-Object FullName -Unique
+
+foreach ($file in $optionCandidates) {
+    try {
+        $lines = Get-Content -LiteralPath $file.FullName
+        $seenW = $false
+        $seenH = $false
+        $seenF = $false
+        for ($i=0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^overrideWidth:')  { $lines[$i] = 'overrideWidth:640';  $seenW=$true }
+            elseif ($lines[$i] -match '^overrideHeight:') { $lines[$i] = 'overrideHeight:360'; $seenH=$true }
+            elseif ($lines[$i] -match '^fullscreen:') { $lines[$i] = 'fullscreen:false'; $seenF=$true }
+        }
+        if (-not $seenW) { $lines += 'overrideWidth:640' }
+        if (-not $seenH) { $lines += 'overrideHeight:360' }
+        if (-not $seenF) { $lines += 'fullscreen:false' }
+        Set-Content -LiteralPath $file.FullName -Value $lines -Encoding UTF8
+        Write-Host "Set 640x360 in $($file.FullName)"
+    } catch {
+        Write-Warning "Could not update $($file.FullName): $($_.Exception.Message)"
+    }
+}
+
+Write-Host ""
+Write-Host "CPU renderer forced: Mesa llvmpipe"
+Write-Host "Window target: 640x360"
+Write-Host "Starting Legacy Launcher: $launcher"
+Start-Process -FilePath $launcher -WorkingDirectory $launcherRoot
+'@ | Set-Content package\start-cpu-llvmpipe.ps1 -Encoding UTF8
+
+          @'
+@echo off
+setlocal
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0restore-cpu-llvmpipe.ps1"
+pause
+'@ | Set-Content package\RESTORE_ORIGINAL_OPENGL.cmd -Encoding ASCII
+
+          @'
+param()
+$ErrorActionPreference = "Stop"
+$launcherRoot = Join-Path $env:APPDATA ".tlauncher\legacy\Minecraft"
+$javaBins = @(
+    Get-ChildItem -LiteralPath $launcherRoot -Recurse -File -Filter javaw.exe -ErrorAction SilentlyContinue |
+    Where-Object { $_.Directory.Name -ieq "bin" } |
+    ForEach-Object { $_.Directory.FullName } |
+    Sort-Object -Unique
+)
+foreach ($javaBin in $javaBins) {
+    $backup = Join-Path $javaBin "_CPU_llvmpipe_original_backup"
+    foreach ($name in @("opengl32.dll","opengl32sw.dll","libgallium_wgl.dll","libglapi.dll",
+                        "libEGL.dll","libGLESv2.dll","d3dcompiler_47.dll","vulkan-1.dll")) {
+        $dst = Join-Path $javaBin $name
+        if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Force }
+        $src = Join-Path $backup $name
+        if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $dst -Force }
+    }
+}
+Write-Host "Original Java OpenGL/ANGLE files restored where backups existed."
+'@ | Set-Content package\restore-cpu-llvmpipe.ps1 -Encoding UTF8
+
+          @'
+Minecraft 26.3 - CPU ONLY / Mesa llvmpipe
+
+Renderer:
+  Mesa llvmpipe (software OpenGL on CPU)
+  Intel HD Graphics 2000 is not used for OpenGL rendering.
+
+Forced environment:
+  GALLIUM_DRIVER=llvmpipe
+  LIBGL_ALWAYS_SOFTWARE=true
+  MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
+  LP_NUM_THREADS=4
+
+Window:
+  640x360, fullscreen disabled where options.txt already exists.
+
+Launcher:
+  Legacy Launcher
+  %APPDATA%\.tlauncher\legacy\Minecraft\TL.exe
+
+Run:
+  START_MINECRAFT_26_3_CPU_640x360.cmd
+'@ | Set-Content package\README_RU.txt -Encoding UTF8
+
+      - name: Build CPU renderer verification program
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          @'
+#include <windows.h>
+#include <GL/gl.h>
+#include <cstdio>
+#include <cstring>
+#include <cctype>
+
+static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    return DefWindowProcA(h,m,w,l);
+}
+static bool contains_ci(const char* s,const char* n) {
+    if(!s || !n) return false;
+    size_t a=strlen(s), b=strlen(n);
+    for(size_t i=0;i+b<=a;i++) {
+        bool ok=true;
+        for(size_t j=0;j<b;j++) {
+            if(std::tolower((unsigned char)s[i+j])!=std::tolower((unsigned char)n[j])) { ok=false; break; }
+        }
+        if(ok) return true;
+    }
+    return false;
+}
+int main() {
+    WNDCLASSA wc{};
+    wc.style=CS_OWNDC; wc.lpfnWndProc=WndProc; wc.hInstance=GetModuleHandleA(nullptr);
+    wc.lpszClassName="MesaCPUVerify";
+    RegisterClassA(&wc);
+    HWND hwnd=CreateWindowExA(0,wc.lpszClassName,"Mesa CPU verify",WS_OVERLAPPEDWINDOW,
+                              0,0,640,360,nullptr,nullptr,wc.hInstance,nullptr);
+    if(!hwnd) return 10;
+    HDC dc=GetDC(hwnd);
+    PIXELFORMATDESCRIPTOR pfd{};
+    pfd.nSize=sizeof(pfd); pfd.nVersion=1;
+    pfd.dwFlags=PFD_DRAW_TO_WINDOW|PFD_SUPPORT_OPENGL|PFD_DOUBLEBUFFER;
+    pfd.iPixelType=PFD_TYPE_RGBA; pfd.cColorBits=24; pfd.cDepthBits=24;
+    int pf=ChoosePixelFormat(dc,&pfd);
+    if(pf<=0 || !SetPixelFormat(dc,pf,&pfd)) return 11;
+    HGLRC rc=wglCreateContext(dc);
+    if(!rc || !wglMakeCurrent(dc,rc)) return 12;
+    const char* renderer=(const char*)glGetString(GL_RENDERER);
+    const char* version=(const char*)glGetString(GL_VERSION);
+    std::printf("GL_RENDERER=%s\nGL_VERSION=%s\n",renderer?renderer:"<null>",version?version:"<null>");
+    bool cpu=contains_ci(renderer,"llvmpipe");
+    wglMakeCurrent(nullptr,nullptr);
+    wglDeleteContext(rc);
+    ReleaseDC(hwnd,dc);
+    DestroyWindow(hwnd);
+    if(!cpu) {
+        std::fprintf(stderr,"CPU RENDERER FAIL: renderer is not llvmpipe\n");
+        return 20;
+    }
+    std::puts("CPU RENDERER PASS");
+    return 0;
+}
+'@ | Set-Content verify-cpu.cpp -Encoding ASCII
+
+          $vswhere = Join-Path \${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+          if (-not $vs) { throw "Visual Studio C++ toolchain not found" }
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+          $cmd = 'call "' + $vcvars + '" && cl /nologo /EHsc verify-cpu.cpp user32.lib gdi32.lib opengl32.lib /Fe:package\verify-cpu.exe'
+          cmd.exe /d /s /c $cmd
+          if ($LASTEXITCODE -ne 0) { throw "CPU verification compile failed" }
+
+      - name: Verify Mesa really uses llvmpipe CPU
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Push-Location package
+          try {
+            $env:GALLIUM_DRIVER = "llvmpipe"
+            $env:LIBGL_ALWAYS_SOFTWARE = "true"
+            $env:MESA_LOADER_DRIVER_OVERRIDE = "llvmpipe"
+            $env:LP_NUM_THREADS = "4"
+            $env:PATH = "$PWD;$env:PATH"
+            .\verify-cpu.exe
+            if ($LASTEXITCODE -ne 0) { throw "CPU llvmpipe verification failed: $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
+          Remove-Item package\verify-cpu.exe -Force
+
+      - name: Write SHA256 manifest
+        shell: pwsh
+        run: |
+          Get-ChildItem package -File | Sort-Object Name | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$h  $($_.Name)"
+          } | Set-Content package\SHA256.txt -Encoding ASCII
+          Get-Content package\SHA256.txt
+
+      - name: Upload CPU-only bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minecraft-26.3-CPU-llvmpipe-640x360
+          path: package/*
+          if-no-files-found: error
+          retention-days: 7
