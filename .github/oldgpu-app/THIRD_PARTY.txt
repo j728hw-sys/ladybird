@@ -1,0 +1,19 @@
+THIRD-PARTY COMPONENTS
+======================
+
+Mesa3D / Mesa for Windows
+Project: https://gitlab.freedesktop.org/mesa/mesa
+Windows distribution: https://github.com/pal1000/mesa-dist-win
+Bundled version: 26.2.0
+Used component: llvmpipe software OpenGL renderer.
+Mesa source files are distributed under their respective open-source licenses.
+See the upstream project for exact per-file license information.
+
+Magpie
+Project: https://github.com/Blinue/Magpie
+Bundled version: v0.12.1 x64
+License: GNU General Public License v3.0.
+The complete corresponding source for this bundled version is available from:
+https://github.com/Blinue/Magpie/tree/v0.12.1
+
+Minecraft On OLD GPU does not include Minecraft itself.
