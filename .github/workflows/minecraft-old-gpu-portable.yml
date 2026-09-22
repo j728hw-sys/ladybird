@@ -1,0 +1,144 @@
+name: Build Minecraft On OLD GPU portable
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - mobilegl-windows-build
+    paths:
+      - ".github/oldgpu-app/**"
+      - ".github/workflows/minecraft-old-gpu-portable.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish GUI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet publish .github/oldgpu-app/gui/MinecraftOnOldGPU.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o out/gui
+          if ($LASTEXITCODE -ne 0) { throw "GUI publish failed" }
+          if (-not (Test-Path out/gui/MinecraftOnOldGPU.exe)) { throw "GUI EXE missing" }
+
+      - name: Publish CLI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet publish .github/oldgpu-app/cli/MinecraftOnOldGPU.CLI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o out/cli
+          if ($LASTEXITCODE -ne 0) { throw "CLI publish failed" }
+          if (-not (Test-Path out/cli/MinecraftOnOldGPU.CLI.exe)) { throw "CLI EXE missing" }
+
+      - name: Download Mesa llvmpipe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/pal1000/mesa-dist-win/releases/download/26.2.0/mesa3d-26.2.0-release-msvc.7z"
+          Invoke-WebRequest -Uri $url -OutFile mesa.7z
+          7z x mesa.7z -omesa -y | Out-Host
+          $ogl = Get-ChildItem mesa -Recurse -File -Filter opengl32.dll | Where-Object { $_.FullName -match "\\x64\\" } | Select-Object -First 1
+          if (-not $ogl) { throw "x64 Mesa opengl32.dll not found" }
+          $x64Mesa = $ogl.Directory.FullName
+          if (-not (Test-Path (Join-Path $x64Mesa "libgallium_wgl.dll"))) { throw "libgallium_wgl.dll missing next to opengl32.dll" }
+          $x64Mesa | Set-Content mesa-x64-path.txt -Encoding ASCII
+
+      - name: Download Magpie x64
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/Blinue/Magpie/releases/download/v0.12.1/Magpie-v0.12.1-x64.zip"
+          Invoke-WebRequest -Uri $url -OutFile magpie.zip
+          Expand-Archive -LiteralPath magpie.zip -DestinationPath magpie -Force
+          $exe = Get-ChildItem magpie -Recurse -File -Filter Magpie.exe | Select-Object -First 1
+          if (-not $exe) { throw "Magpie.exe not found" }
+          $exe.Directory.FullName | Set-Content magpie-path.txt -Encoding ASCII
+
+      - name: Assemble portable folder
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = "package/Minecraft On OLD GPU"
+          New-Item -ItemType Directory -Force $root | Out-Null
+          New-Item -ItemType Directory -Force "$root/runtime/mesa" | Out-Null
+          New-Item -ItemType Directory -Force "$root/runtime/magpie" | Out-Null
+          Copy-Item out/gui/MinecraftOnOldGPU.exe "$root/MinecraftOnOldGPU.exe" -Force
+          Copy-Item out/cli/MinecraftOnOldGPU.CLI.exe "$root/MinecraftOnOldGPU.CLI.exe" -Force
+          Copy-Item .github/oldgpu-app/README_RU.txt "$root/README_RU.txt" -Force
+          Copy-Item .github/oldgpu-app/THIRD_PARTY.txt "$root/THIRD_PARTY.txt" -Force
+          $mesaDir = (Get-Content mesa-x64-path.txt -Raw).Trim()
+          foreach ($name in @("opengl32.dll","opengl32sw.dll","libgallium_wgl.dll","libglapi.dll")) {
+            $src = Join-Path $mesaDir $name
+            if (Test-Path $src) { Copy-Item $src "$root/runtime/mesa/$name" -Force }
+          }
+          if (-not (Test-Path "$root/runtime/mesa/opengl32.dll")) { throw "Mesa opengl32.dll absent" }
+          if (-not (Test-Path "$root/runtime/mesa/libgallium_wgl.dll")) { throw "Mesa libgallium_wgl.dll absent" }
+          $magpieDir = (Get-Content magpie-path.txt -Raw).Trim()
+          Copy-Item "$magpieDir/*" "$root/runtime/magpie/" -Recurse -Force
+          New-Item -ItemType Directory -Force "$root/runtime/magpie/config" | Out-Null
+          if (-not (Test-Path "$root/runtime/magpie/config/config.json")) { "{}" | Set-Content "$root/runtime/magpie/config/config.json" -Encoding UTF8 }
+
+      - name: Compile llvmpipe verification helper
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+          if (-not $vs) { throw "Visual Studio C++ toolchain not found" }
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+          $cmd = 'call "' + $vcvars + '" && cl /nologo /EHsc ".github\mesa-cpu\verify-cpu.cpp" user32.lib gdi32.lib opengl32.lib /Fe:"package\Minecraft On OLD GPU\runtime\mesa\verify-cpu.exe"'
+          cmd.exe /d /s /c $cmd
+          if ($LASTEXITCODE -ne 0) { throw "verify-cpu compilation failed" }
+
+      - name: Verify bundled renderer is CPU llvmpipe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Push-Location "package/Minecraft On OLD GPU/runtime/mesa"
+          try {
+            $env:GALLIUM_DRIVER = "llvmpipe"
+            $env:LIBGL_ALWAYS_SOFTWARE = "true"
+            $env:MESA_LOADER_DRIVER_OVERRIDE = "llvmpipe"
+            $env:LP_NUM_THREADS = "4"
+            $env:PATH = "$PWD;$env:PATH"
+            .\verify-cpu.exe
+            if ($LASTEXITCODE -ne 0) { throw "llvmpipe verification failed" }
+          } finally {
+            Pop-Location
+          }
+          Remove-Item "package/Minecraft On OLD GPU/runtime/mesa/verify-cpu.exe" -Force
+
+      - name: Smoke test CLI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & "package/Minecraft On OLD GPU/MinecraftOnOldGPU.CLI.exe" --help
+          if ($LASTEXITCODE -ne 0) { throw "CLI smoke test failed" }
+
+      - name: Write SHA256 manifest
+        shell: pwsh
+        run: |
+          $root = Resolve-Path "package/Minecraft On OLD GPU"
+          Get-ChildItem $root -Recurse -File | Where-Object { $_.Name -ne "SHA256.txt" } | Sort-Object FullName | ForEach-Object {
+            $rel = [IO.Path]::GetRelativePath($root, $_.FullName).Replace("\","/")
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$h  $rel"
+          } | Set-Content "$root/SHA256.txt" -Encoding ASCII
+
+      - name: Upload portable bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Minecraft-On-OLD-GPU-portable-win-x64
+          path: "package/Minecraft On OLD GPU/**"
+          if-no-files-found: error
+          retention-days: 7
