@@ -301,9 +301,11 @@ internal sealed class MainForm : Form
 
     private void LoadDefaults()
     {
+        _source.BeginUpdate();
         _source.Items.Clear();
         foreach (var r in OldGpuCore.GetRenderResolutionPresets())
             _source.Items.Add(r.ToString());
+        _source.EndUpdate();
 
         // Editable field: values below 320x180 are allowed and any custom W×H
         // can be typed even if it is not in the preset list.
@@ -311,9 +313,11 @@ internal sealed class MainForm : Form
 
         var desktop = OldGpuCore.GetDesktopResolution();
 
+        _target.BeginUpdate();
         _target.Items.Clear();
         foreach (var r in OldGpuCore.GetSupportedDisplayResolutions())
             _target.Items.Add(r.ToString());
+        _target.EndUpdate();
 
         _target.Text = $"{desktop.Width}x{desktop.Height}";
 
