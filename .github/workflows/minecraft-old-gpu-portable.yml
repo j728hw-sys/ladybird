@@ -28,7 +28,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          dotnet publish .github/oldgpu-app/gui/MinecraftOnOldGPU.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o out/gui
+          dotnet publish .github/oldgpu-app/gui/MinecraftOnOldGPU.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o out/gui
           if ($LASTEXITCODE -ne 0) { throw "GUI publish failed" }
           if (-not (Test-Path out/gui/MinecraftOnOldGPU.exe)) { throw "GUI EXE missing" }
 
@@ -36,7 +36,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          dotnet publish .github/oldgpu-app/cli/MinecraftOnOldGPU.CLI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o out/cli
+          dotnet publish .github/oldgpu-app/cli/MinecraftOnOldGPU.CLI.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o out/cli
           if ($LASTEXITCODE -ne 0) { throw "CLI publish failed" }
           if (-not (Test-Path out/cli/MinecraftOnOldGPU.CLI.exe)) { throw "CLI EXE missing" }
 
