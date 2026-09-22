@@ -32,6 +32,7 @@ internal static class CliProgram
             string? target = null;
             int threads = Math.Clamp(Environment.ProcessorCount, 1, 8);
             bool scale = true;
+            bool stretch = true;
             bool restoreDisplay = true;
 
             for (int i = 1; i < args.Length; i++)
@@ -51,6 +52,9 @@ internal static class CliProgram
                         break;
                     case "--no-scale":
                         scale = false;
+                        break;
+                    case "--no-stretch":
+                        stretch = false;
                         break;
                     case "--keep-display-mode":
                         restoreDisplay = false;
@@ -84,10 +88,11 @@ internal static class CliProgram
             Console.WriteLine("Minecraft On OLD GPU CLI");
             Console.WriteLine($"Source: {sw}x{sh}");
             Console.WriteLine(scale ? $"Target: {tw}x{th}" : "Scaling: off");
+            Console.WriteLine(scale ? $"Stretch: {(stretch ? "on" : "off (1:1)")}" : "Stretch: off");
             Console.WriteLine($"llvmpipe threads: {threads}");
             Console.WriteLine();
 
-            var cfg = new LaunchConfig(sw, sh, tw, th, threads, scale, restoreDisplay);
+            var cfg = new LaunchConfig(sw, sh, tw, th, threads, scale, stretch, restoreDisplay);
             await OldGpuCore.LaunchAsync(cfg, Console.WriteLine);
             return 0;
         }
@@ -118,7 +123,8 @@ Minecraft On OLD GPU CLI
   -s, --source 320x180       Разрешение рендера Minecraft
   -t, --target 1920x1080     Разрешение экрана перед fullscreen upscale
       --threads 4            Потоки llvmpipe
-      --no-scale             Не запускать Magpie
+      --no-scale             Не запускать полноэкранный scaler
+      --no-stretch           Не растягивать изображение: 1:1 по центру
       --keep-display-mode    Не возвращать старое разрешение после выхода
 
 Примеры:
