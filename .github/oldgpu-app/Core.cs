@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace MinecraftOnOldGPU;
@@ -13,6 +12,7 @@ public sealed record LaunchConfig(
     int? TargetHeight,
     int LlvmThreads,
     bool FullscreenUpscale,
+    bool StretchImage,
     bool RestoreDisplayAfterExit = true);
 
 public sealed record DisplayResolution(int Width, int Height)
@@ -28,8 +28,8 @@ public static class OldGpuCore
         ".tlauncher", "legacy", "Minecraft");
     public static string LauncherExe => Path.Combine(LauncherRoot, "TL.exe");
     public static string MesaDir => Path.Combine(AppDir, "runtime", "mesa");
-    public static string MagpieDir => Path.Combine(AppDir, "runtime", "magpie");
-    public static string MagpieExe => Path.Combine(MagpieDir, "Magpie.exe");
+    public static string IntegerScalerDir => Path.Combine(AppDir, "runtime", "integer-scaler");
+    public static string IntegerScalerExe => Path.Combine(IntegerScalerDir, "IntegerScaler_64bit.exe");
 
     private static readonly string[] ManagedFiles =
     {
@@ -120,7 +120,12 @@ public static class OldGpuCore
     {
         log ??= _ => { };
 
-        ValidateBundle();
+        ValidateBundle(cfg.FullscreenUpscale);
+
+        // Always terminate scalers left by an older launch first. This makes
+        // "Fullscreen scaling = OFF" a real OFF state instead of leaving the
+        // previous scaler running.
+        StopFullscreenScaler(log);
 
         if (!File.Exists(LauncherExe))
             throw new FileNotFoundException($"Legacy Launcher не найден: {LauncherExe}");
@@ -180,41 +185,24 @@ public static class OldGpuCore
 
             if (cfg.FullscreenUpscale)
             {
-                log("Готовлю Magpie fullscreen stretch...");
+                log("Готовлю IntegerScaler fullscreen...");
+                await StartIntegerScalerAsync(
+                    hwnd,
+                    cfg.SourceWidth,
+                    cfg.SourceHeight,
+                    cfg.StretchImage,
+                    log,
+                    ct);
 
-                StopExistingMagpie(log);
-
-                string processPath = GetWindowProcessPath(hwnd);
-                string className = GetWindowClassName(hwnd);
-
-                log($"Minecraft process: {processPath}");
-                log($"Minecraft window class: {className}");
-
-                WriteMagpieMinecraftProfile(processPath, className, log);
-
-                // Try to activate Minecraft, but Magpie's auto-scale profile does not
-                // depend on a one-shot hotkey. If Windows denies the focus request,
-                // it will still scale as soon as Minecraft becomes foreground.
-                TryActivateWindow(hwnd);
-
-                log("Запускаю Magpie с профилем AutoScale=Fullscreen...");
-                var magpie = Process.Start(new ProcessStartInfo(MagpieExe)
-                {
-                    WorkingDirectory = MagpieDir,
-                    UseShellExecute = true,
-                    WindowStyle = ProcessWindowStyle.Minimized
-                }) ?? throw new InvalidOperationException("Не удалось запустить Magpie.");
-
-                await Task.Delay(2500, ct);
-
-                // Re-activate once Magpie has initialized. No Alt+Shift+A injection.
-                TryActivateWindow(hwnd);
-
-                log("Fullscreen scaler запущен. Minecraft остаётся в низком реальном разрешении.");
+                log(cfg.StretchImage
+                    ? "IntegerScaler включён: низкое окно растягивается на экран."
+                    : "IntegerScaler включён без растягивания: изображение 1:1 по центру.");
             }
             else
             {
-                log("Готово: запущено без внешнего масштабирования.");
+                // This path deliberately leaves no scaler process alive.
+                StopFullscreenScaler(log);
+                log("Полноэкранное масштабирование отключено: обычное низкое окно Minecraft.");
             }
 
             if (cfg.RestoreDisplayAfterExit && originalMode is not null)
@@ -268,7 +256,7 @@ public static class OldGpuCore
         }
     }
 
-    private static void ValidateBundle()
+    private static void ValidateBundle(bool requireScaler)
     {
         foreach (var name in new[] { "opengl32.dll", "libgallium_wgl.dll" })
         {
@@ -278,8 +266,8 @@ public static class OldGpuCore
                 throw new FileNotFoundException($"Не найден Mesa runtime: {p}");
         }
 
-        if (!File.Exists(MagpieExe))
-            throw new FileNotFoundException($"Не найден Magpie: {MagpieExe}");
+        if (requireScaler && !File.Exists(IntegerScalerExe))
+            throw new FileNotFoundException($"Не найден IntegerScaler: {IntegerScalerExe}");
     }
 
     private static void InstallMesaToLegacyJava(Action<string> log)
@@ -369,6 +357,7 @@ public static class OldGpuCore
                 Upsert(lines, "overrideWidth:", w.ToString());
                 Upsert(lines, "overrideHeight:", h.ToString());
                 Upsert(lines, "fullscreen:", "false");
+                Upsert(lines, "exclusiveFullscreen:", "false");
 
                 File.WriteAllLines(file, lines, new UTF8Encoding(false));
 
@@ -490,93 +479,112 @@ public static class OldGpuCore
         return sb.ToString();
     }
 
-    private static void StopExistingMagpie(Action<string> log)
+    public static void StopFullscreenScaler(Action<string>? log = null)
     {
-        foreach (var p in Process.GetProcessesByName("Magpie"))
+        log ??= _ => { };
+
+        foreach (var name in new[] { "IntegerScaler_64bit", "IntegerScaler_32bit", "Magpie" })
         {
-            try
+            foreach (var p in Process.GetProcessesByName(name))
             {
-                log($"Закрываю старый Magpie PID {p.Id}...");
-                p.Kill(true);
-                p.WaitForExit(3000);
-            }
-            catch
-            {
-                // Best effort. The new launch will report a failure if a stale
-                // single-instance process prevents startup.
-            }
-            finally
-            {
-                p.Dispose();
+                try
+                {
+                    log($"Останавливаю scaler {p.ProcessName} PID {p.Id}...");
+                    p.Kill(true);
+                    p.WaitForExit(3000);
+                }
+                catch
+                {
+                    // Best effort: stale or elevated process may disappear between
+                    // enumeration and termination.
+                }
+                finally
+                {
+                    p.Dispose();
+                }
             }
         }
     }
 
-    private static void WriteMagpieMinecraftProfile(
-        string processPath,
-        string className,
-        Action<string> log)
+    private static async Task StartIntegerScalerAsync(
+        IntPtr hwnd,
+        int sourceWidth,
+        int sourceHeight,
+        bool stretchImage,
+        Action<string> log,
+        CancellationToken ct)
     {
-        var configDir = Path.Combine(MagpieDir, "config");
-        var configPath = Path.Combine(configDir, "config.json");
+        StopFullscreenScaler(log);
 
-        Directory.CreateDirectory(configDir);
+        string processPath = GetWindowProcessPath(hwnd);
+        Directory.CreateDirectory(IntegerScalerDir);
 
-        // Magpie v0.12.1 treats an existing "{}" as a real configuration.
-        // That bypasses creation of the built-in scaling modes and leaves
-        // profile.scalingMode at -1. Define our mode explicitly instead.
-        //
-        // scalingType = 3 == ScalingType::Fill in Magpie 0.12.1:
-        // stretch the source to fill the selected display completely.
-        //
-        // autoScale = 1 == AutoScale::Fullscreen.
-        var config = new
+        // IntegerScaler can auto-scale an app identified by its exact executable path.
+        // This is more reliable than synthesizing Alt+F11.
+        string autoPath = Path.Combine(IntegerScalerDir, "auto.txt");
+        File.WriteAllText(autoPath, processPath + Environment.NewLine, new UTF8Encoding(false));
+
+        var args = new List<string>
         {
-            scalingModes = new object[]
-            {
-                new
-                {
-                    name = "Minecraft On OLD GPU - Nearest Fill",
-                    effects = new object[]
-                    {
-                        new
-                        {
-                            name = "Nearest",
-                            scalingType = 3
-                        }
-                    }
-                }
-            },
-            profiles = new object[]
-            {
-                // First entry is Magpie's default profile.
-                new
-                {
-                    scalingMode = 0
-                },
-                new
-                {
-                    name = "Minecraft On OLD GPU",
-                    packaged = false,
-                    pathRule = processPath,
-                    classNameRule = className,
-                    launcherPath = "",
-                    autoScale = 1,
-                    launchParameters = "",
-                    scalingMode = 0
-                }
-            },
-            countdownSeconds = 1
+            "-locale", "ru",
+            "-nohotkeys",
+            "-resize", $"{sourceWidth}x{sourceHeight}"
         };
 
-        var json = JsonSerializer.Serialize(
-            config,
-            new JsonSerializerOptions { WriteIndented = true });
+        if (stretchImage)
+        {
+            // Allow the window to use the entire available screen area even when the
+            // scale is not an integer. For 640x360 -> 1920x1080 this is exactly 3x.
+            args.Add("-fractional");
+        }
+        else
+        {
+            // Full-screen presentation stays enabled, but the image itself is not
+            // enlarged. IntegerScaler centers it at 1:1 on a black background.
+            args.Add("-ratio");
+            args.Add("1");
+        }
 
-        File.WriteAllText(configPath, json, new UTF8Encoding(false));
+        log($"IntegerScaler target: {processPath}");
+        log($"IntegerScaler mode: {(stretchImage ? "stretch-to-screen" : "1:1 no stretch")}");
 
-        log($"Magpie profile записан: {configPath}");
-        log("Scaling mode: Nearest + Fill; AutoScale: Fullscreen.");
+        // Make Minecraft the foreground app before IntegerScaler starts. The auto.txt
+        // entry then keeps automatic scaling tied to this javaw.exe path.
+        TryActivateWindow(hwnd);
+        await Task.Delay(250, ct);
+
+        var psi = new ProcessStartInfo(IntegerScalerExe)
+        {
+            WorkingDirectory = IntegerScalerDir,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        foreach (string arg in args)
+            psi.ArgumentList.Add(arg);
+
+        _ = Process.Start(psi)
+            ?? throw new InvalidOperationException("Не удалось запустить IntegerScaler.");
+
+        await Task.Delay(900, ct);
+        TryActivateWindow(hwnd);
+
+        // Do not block the launcher UI for the whole game session. Clean up the
+        // scaler after Minecraft closes.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (IsWindow(hwnd))
+                    await Task.Delay(1000);
+
+                StopFullscreenScaler();
+            }
+            catch
+            {
+                // Process shutdown cleanup is best-effort.
+            }
+        });
     }
 
     private static void ResizeClient(IntPtr hwnd, int clientW, int clientH)
