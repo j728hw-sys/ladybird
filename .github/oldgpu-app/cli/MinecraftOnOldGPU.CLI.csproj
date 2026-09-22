@@ -7,7 +7,7 @@
     <AssemblyName>MinecraftOnOldGPU.CLI</AssemblyName>
     <RootNamespace>MinecraftOnOldGPU</RootNamespace>
     <PublishSingleFile>true</PublishSingleFile>
-    <SelfContained>true</SelfContained>
+    <SelfContained>false</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <PublishTrimmed>false</PublishTrimmed>
     <DebugType>none</DebugType>
