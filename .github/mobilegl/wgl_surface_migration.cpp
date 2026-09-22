@@ -98,8 +98,9 @@ static bool SetupPixelFormat(HDC dc) {
     pfd.cColorBits = 32;
     pfd.cDepthBits = 24;
     pfd.cStencilBits = 8;
-    int pf = ChoosePixelFormat(dc,&pfd);
-    if (pf <= 0) return false;
+    // Minecraft's failing transition in the captured log uses MobileGL WGL
+    // pixel format 2 on both the old and new HDC. Reproduce that exact shape.
+    const int pf = 2;
     PIXELFORMATDESCRIPTOR actual{};
     if (!DescribePixelFormat(dc,pf,sizeof(actual),&actual)) return false;
     return SetPixelFormat(dc,pf,&actual) == TRUE;
