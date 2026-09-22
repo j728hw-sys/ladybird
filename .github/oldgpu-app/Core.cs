@@ -184,8 +184,9 @@ public static class OldGpuCore
         return set
             .Where(x => x.W >= 1 && x.H >= 1)
             .Select(x => new DisplayResolution(x.W, x.H))
-            .OrderBy(x => (long)x.Width * x.Height)
-            .ThenBy(x => x.Width)
+            // Human-readable order: width first, then height.
+            // This keeps all 640x... entries together, then 648x..., 656x..., etc.
+            .OrderBy(x => x.Width)
             .ThenBy(x => x.Height)
             .ToArray();
     }
