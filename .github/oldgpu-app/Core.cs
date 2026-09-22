@@ -55,61 +55,138 @@ public static class OldGpuCore
     }
 
     public static IReadOnlyList<DisplayResolution> GetSupportedDisplayResolutions()
+        => BuildResolutionCatalog(includeEveryWindowsMode: true);
+
+    public static IReadOnlyList<DisplayResolution> GetRenderResolutionPresets()
+        => BuildResolutionCatalog(includeEveryWindowsMode: true);
+
+    private static IReadOnlyList<DisplayResolution> BuildResolutionCatalog(
+        bool includeEveryWindowsMode)
     {
         var set = new HashSet<(int W, int H)>();
 
-        for (int mode = 0; ; mode++)
+        // Every mode the actual Windows display driver reports.
+        if (includeEveryWindowsMode)
         {
-            var dm = DEVMODE.Create();
-            if (!EnumDisplaySettings(null, mode, ref dm))
-                break;
+            for (int mode = 0; ; mode++)
+            {
+                var dm = DEVMODE.Create();
+                if (!EnumDisplaySettings(null, mode, ref dm))
+                    break;
 
-            // Windows 8+ display-mode changes are effectively 32-bpp for modern apps.
-            if (dm.dmPelsWidth > 0 && dm.dmPelsHeight > 0 && dm.dmBitsPerPel >= 32)
-                set.Add(((int)dm.dmPelsWidth, (int)dm.dmPelsHeight));
+                if (dm.dmPelsWidth > 0 && dm.dmPelsHeight > 0)
+                    set.Add(((int)dm.dmPelsWidth, (int)dm.dmPelsHeight));
+            }
         }
 
         var current = GetDesktopResolution();
         set.Add((current.Width, current.Height));
 
+        // Large catalogue of historical + modern PC/video modes. This explicitly
+        // includes non-16:9 modes instead of pretending that only widescreen exists.
+        foreach (var r in new (int W, int H)[]
+        {
+            // ultra-low / retro / handheld-like
+            (1,1), (16,9), (32,18), (40,30), (48,27), (64,36), (64,48),
+            (72,40), (80,45), (80,50), (80,60), (96,54), (96,60), (96,72),
+            (112,63), (120,68), (120,90), (128,72), (128,80), (128,96),
+            (144,81), (144,90), (144,108), (160,90), (160,100), (160,120),
+            (176,99), (176,110), (176,132), (192,108), (192,120), (192,144),
+            (200,112), (200,125), (200,150), (224,126), (224,140), (224,168),
+            (240,135), (240,150), (240,180), (256,144), (256,160), (256,192),
+            (288,162), (288,180), (288,216), (300,168), (300,188), (300,225),
+            (320,180), (320,200), (320,240), (352,198), (352,220), (352,240),
+            (360,202), (360,225), (360,240), (360,270), (384,216), (384,240),
+            (384,288), (400,225), (400,240), (400,250), (400,300),
+            (416,234), (416,260), (416,312), (426,240), (432,243), (432,270),
+            (432,324), (448,252), (448,280), (448,336), (480,270), (480,300),
+            (480,320), (480,360), (512,288), (512,320), (512,384),
+            (540,304), (540,338), (540,405), (560,315), (560,350), (560,420),
+            (576,324), (576,360), (576,432), (600,338), (600,375), (600,450),
+
+            // classic PC / DOS / VGA / SVGA / XGA and widescreen variants
+            (640,350), (640,360), (640,400), (640,480),
+            (720,400), (720,405), (720,450), (720,480), (720,540), (720,576),
+            (768,432), (768,480), (768,576), (768,600),
+            (800,450), (800,480), (800,500), (800,600),
+            (832,468), (832,520), (832,624),
+            (848,480), (852,480), (854,480),
+            (864,486), (864,540), (864,648),
+            (896,504), (896,560), (896,672),
+            (900,506), (900,562), (900,675),
+            (960,540), (960,600), (960,640), (960,720),
+            (1024,576), (1024,600), (1024,640), (1024,768),
+            (1080,607), (1080,675), (1080,720), (1080,810),
+            (1120,630), (1120,700), (1120,840),
+            (1152,648), (1152,720), (1152,768), (1152,864), (1152,868),
+            (1176,664), (1200,675), (1200,750), (1200,800), (1200,900),
+
+            // HD-era desktop/notebook modes
+            (1280,720), (1280,768), (1280,800), (1280,854), (1280,960), (1280,1024),
+            (1296,729), (1296,810), (1296,972),
+            (1360,768), (1366,768), (1368,768),
+            (1400,788), (1400,875), (1400,900), (1400,1050),
+            (1440,810), (1440,900), (1440,960), (1440,1080),
+            (1536,864), (1536,960), (1536,1024), (1536,1152),
+            (1600,900), (1600,1000), (1600,1024), (1600,1200),
+            (1680,945), (1680,1050), (1680,1200),
+            (1760,990), (1768,992),
+            (1792,1008), (1792,1120), (1792,1344),
+            (1800,1012), (1800,1125), (1800,1200), (1800,1350),
+            (1856,1392),
+            (1920,1080), (1920,1200), (1920,1280), (1920,1440),
+            (2048,1080), (2048,1152), (2048,1280), (2048,1536),
+            (2160,1215), (2160,1350), (2160,1440), (2160,1620),
+            (2304,1296), (2304,1440), (2304,1728),
+            (2560,1080), (2560,1440), (2560,1600), (2560,1700), (2560,1920),
+            (2736,1824), (2880,1620), (2880,1800), (2880,1920), (2880,2160),
+            (3000,2000), (3200,1800), (3200,2000), (3200,2400),
+            (3440,1440), (3840,1080), (3840,1600), (3840,2160), (3840,2400),
+            (4096,2160), (4096,2304), (4096,2560), (4096,3072),
+            (5120,1440), (5120,2160), (5120,2880), (5120,3200),
+            (6016,3384), (6144,3456), (7680,2160), (7680,4320)
+        })
+        {
+            set.Add(r);
+        }
+
+        // Also generate dense choices for the major aspect ratios, so the list is
+        // not limited to a hand-picked set. Widths are generated every 8 pixels.
+        // The edit box still accepts any exact W×H, including odd/custom values.
+        var ratios = new (int X, int Y)[]
+        {
+            (1,1), (5,4), (4,3), (3,2), (16,10), (15,9), (16,9),
+            (17,9), (18,9), (19,9), (39,18), (20,9), (21,9), (32,9)
+        };
+
+        for (int w = 64; w <= 7680; w += 8)
+        {
+            foreach (var (x, y) in ratios)
+            {
+                int h = (int)Math.Round(w * (double)y / x);
+                if (h >= 1 && h <= 4320)
+                    set.Add((w, h));
+            }
+        }
+
+        // Generate from heights too; this catches standard sizes whose width does
+        // not fall on the 8-pixel grid used above.
+        for (int h = 36; h <= 4320; h += 8)
+        {
+            foreach (var (x, y) in ratios)
+            {
+                int w = (int)Math.Round(h * (double)x / y);
+                if (w >= 1 && w <= 7680)
+                    set.Add((w, h));
+            }
+        }
+
         return set
+            .Where(x => x.W >= 1 && x.H >= 1)
             .Select(x => new DisplayResolution(x.W, x.H))
             .OrderBy(x => (long)x.Width * x.Height)
             .ThenBy(x => x.Width)
             .ThenBy(x => x.Height)
-            .ToArray();
-    }
-
-    public static IReadOnlyList<DisplayResolution> GetRenderResolutionPresets()
-    {
-        var set = new HashSet<(int W, int H)>();
-
-        // Every exact 16:9 size whose width is a multiple of 16, including very low modes.
-        // The combo is editable too, so arbitrary W x H remains possible.
-        int maxWidth = Math.Max(GetDesktopResolution().Width, 1920);
-        maxWidth = Math.Min(maxWidth, 4096);
-
-        for (int w = 16; w <= maxWidth; w += 16)
-        {
-            int h = w * 9 / 16;
-            if (h >= 9)
-                set.Add((w, h));
-        }
-
-        // Common non-multiple-of-16 modes.
-        foreach (var r in new[]
-        {
-            (80,45), (96,54), (128,72), (160,90), (192,108), (256,144),
-            (320,180), (426,240), (480,270), (640,360), (854,480),
-            (960,540), (1024,576), (1280,720), (1366,768),
-            (1600,900), (1920,1080), (2560,1440), (3840,2160)
-        })
-            set.Add(r);
-
-        return set
-            .Select(x => new DisplayResolution(x.W, x.H))
-            .OrderBy(x => (long)x.Width * x.Height)
-            .ThenBy(x => x.Width)
             .ToArray();
     }
 
