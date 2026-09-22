@@ -104,7 +104,14 @@ old = r'''        if (m_eglSurfaceInitialized) {
 new = r'''        // Switching WGL/EGL window surfaces must preserve the one native
         // DirectGLES context. BackendObject::ActivateEGLSurface will call
         // InitWindowSurface(), which replaces only the native EGLSurface.
-        return BackendObject::CreateEGLWindowSurface(surface, handle);
+        // Capabilities belong to that surviving native context, so do not rerun
+        // the driver POST/probes merely because the HWND changed.
+        const Bool preserveCapabilities = m_eglSurfaceInitialized && m_backendCapabilitiesInitialized;
+        const Bool ok = BackendObject::CreateEGLWindowSurface(surface, handle);
+        if (ok && preserveCapabilities) {
+            m_backendCapabilitiesInitialized = true;
+        }
+        return ok;
 '''
 if old not in s:
     raise SystemExit("CreateEGLWindowSurface destructive block not found; refusing partial patch")
