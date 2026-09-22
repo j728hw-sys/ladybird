@@ -132,8 +132,8 @@ internal sealed class MainForm : Form
         grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         card.Controls.Add(grid);
 
-        grid.Controls.Add(MakeCaption("Рендер Minecraft"), 0, 0);
-        grid.Controls.Add(MakeCaption("Растянуть до"), 2, 0);
+        grid.Controls.Add(MakeCaption("Рендер Minecraft — любой W×H"), 0, 0);
+        grid.Controls.Add(MakeCaption("Растянуть до — все режимы Windows"), 2, 0);
 
         StyleCombo(_source);
         StyleCombo(_target);
@@ -283,23 +283,29 @@ internal sealed class MainForm : Form
 
     private void LoadDefaults()
     {
-        _source.Items.AddRange(new object[]
-        {
-            "320x180", "426x240", "480x270", "640x360", "854x480"
-        });
+        _source.Items.Clear();
+        foreach (var r in OldGpuCore.GetRenderResolutionPresets())
+            _source.Items.Add(r.ToString());
+
+        // Editable field: values below 320x180 are allowed and any custom W×H
+        // can be typed even if it is not in the preset list.
         _source.Text = "320x180";
 
         var desktop = OldGpuCore.GetDesktopResolution();
-        _target.Items.AddRange(new object[]
-        {
-            $"{desktop.Width}x{desktop.Height}",
-            "1280x720", "1366x768", "1600x900", "1920x1080"
-        });
+
+        _target.Items.Clear();
+        foreach (var r in OldGpuCore.GetSupportedDisplayResolutions())
+            _target.Items.Add(r.ToString());
+
         _target.Text = $"{desktop.Width}x{desktop.Height}";
 
         _threads.Value = Math.Clamp(Environment.ProcessorCount, 1, 8);
+
         Log($"Desktop: {desktop.Width}x{desktop.Height}");
+        Log($"Windows display modes: {_target.Items.Count}");
+        Log($"Render presets: {_source.Items.Count}; custom W×H is also accepted");
         Log("Renderer mode: Mesa llvmpipe (CPU only)");
+        Log("Fullscreen mode: Magpie AutoScale + Nearest Fill");
     }
 
     private async Task Launch()
@@ -407,6 +413,8 @@ internal sealed class MainForm : Form
         cb.ForeColor = TextPrimary;
         cb.Font = new Font("Segoe UI Semibold", 12f);
         cb.Dock = DockStyle.Fill;
+        cb.MaxDropDownItems = 18;
+        cb.IntegralHeight = true;
         cb.Margin = new Padding(0, 0, 14, 6);
     }
 }
