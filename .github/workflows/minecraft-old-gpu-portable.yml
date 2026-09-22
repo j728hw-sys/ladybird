@@ -53,16 +53,19 @@ jobs:
           if (-not (Test-Path (Join-Path $x64Mesa "libgallium_wgl.dll"))) { throw "libgallium_wgl.dll missing next to opengl32.dll" }
           $x64Mesa | Set-Content mesa-x64-path.txt -Encoding ASCII
 
-      - name: Download Magpie x64
+      - name: Download IntegerScaler 2.20
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $url = "https://github.com/Blinue/Magpie/releases/download/v0.12.1/Magpie-v0.12.1-x64.zip"
-          Invoke-WebRequest -Uri $url -OutFile magpie.zip
-          Expand-Archive -LiteralPath magpie.zip -DestinationPath magpie -Force
-          $exe = Get-ChildItem magpie -Recurse -File -Filter Magpie.exe | Select-Object -First 1
-          if (-not $exe) { throw "Magpie.exe not found" }
-          $exe.Directory.FullName | Set-Content magpie-path.txt -Encoding ASCII
+          $url = "https://dl.tanalin.com/projects/integer-scaler/IntegerScaler-2.20.zip"
+          curl.exe -L --fail --retry 5 --retry-delay 2 -A "Mozilla/5.0" $url -o integer-scaler.zip
+          if ($LASTEXITCODE -ne 0) { throw "IntegerScaler download failed" }
+          Expand-Archive -LiteralPath integer-scaler.zip -DestinationPath integer-scaler -Force
+          $exe = Get-ChildItem integer-scaler -Recurse -File -Filter IntegerScaler_64bit.exe | Select-Object -First 1
+          if (-not $exe) { throw "IntegerScaler_64bit.exe not found" }
+          $exe.Directory.FullName | Set-Content integer-scaler-path.txt -Encoding ASCII
+          Write-Host "IntegerScaler SHA256:"
+          Get-FileHash $exe.FullName -Algorithm SHA256 | Format-List
 
       - name: Assemble portable folder
         shell: pwsh
@@ -71,7 +74,7 @@ jobs:
           $root = "package/Minecraft On OLD GPU"
           New-Item -ItemType Directory -Force $root | Out-Null
           New-Item -ItemType Directory -Force "$root/runtime/mesa" | Out-Null
-          New-Item -ItemType Directory -Force "$root/runtime/magpie" | Out-Null
+          New-Item -ItemType Directory -Force "$root/runtime/integer-scaler" | Out-Null
           Copy-Item out/gui/MinecraftOnOldGPU.exe "$root/MinecraftOnOldGPU.exe" -Force
           Copy-Item out/cli/MinecraftOnOldGPU.CLI.exe "$root/MinecraftOnOldGPU.CLI.exe" -Force
           Copy-Item .github/oldgpu-app/README_RU.txt "$root/README_RU.txt" -Force
@@ -83,14 +86,14 @@ jobs:
           }
           if (-not (Test-Path "$root/runtime/mesa/opengl32.dll")) { throw "Mesa opengl32.dll absent" }
           if (-not (Test-Path "$root/runtime/mesa/libgallium_wgl.dll")) { throw "Mesa libgallium_wgl.dll absent" }
-          $magpieDir = (Get-Content magpie-path.txt -Raw).Trim()
-          Copy-Item "$magpieDir/*" "$root/runtime/magpie/" -Recurse -Force
-          New-Item -ItemType Directory -Force "$root/runtime/magpie/config" | Out-Null
-          # Magpie portable mode requires the config file to exist. It MUST be empty,
-          # not "{}", so Magpie creates its built-in scaling modes on first launch.
-          $cfg = "$root/runtime/magpie/config/config.json"
-          [IO.File]::WriteAllBytes($cfg, [byte[]]@())
-          if ((Get-Item $cfg).Length -ne 0) { throw "Magpie seed config must be exactly zero bytes" }
+          $integerScalerDir = (Get-Content integer-scaler-path.txt -Raw).Trim()
+          Copy-Item "$integerScalerDir/*" "$root/runtime/integer-scaler/" -Recurse -Force
+          if (-not (Test-Path "$root/runtime/integer-scaler/IntegerScaler_64bit.exe")) {
+            throw "IntegerScaler_64bit.exe absent from package"
+          }
+          if (Test-Path "$root/runtime/magpie") {
+            throw "Magpie must not be present in the new package"
+          }
 
       - name: Compile llvmpipe verification helper
         shell: pwsh
