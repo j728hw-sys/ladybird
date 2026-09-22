@@ -86,7 +86,11 @@ jobs:
           $magpieDir = (Get-Content magpie-path.txt -Raw).Trim()
           Copy-Item "$magpieDir/*" "$root/runtime/magpie/" -Recurse -Force
           New-Item -ItemType Directory -Force "$root/runtime/magpie/config" | Out-Null
-          if (-not (Test-Path "$root/runtime/magpie/config/config.json")) { "{}" | Set-Content "$root/runtime/magpie/config/config.json" -Encoding UTF8 }
+          # Magpie portable mode requires the config file to exist. It MUST be empty,
+          # not "{}", so Magpie creates its built-in scaling modes on first launch.
+          $cfg = "$root/runtime/magpie/config/config.json"
+          [IO.File]::WriteAllBytes($cfg, [byte[]]@())
+          if ((Get-Item $cfg).Length -ne 0) { throw "Magpie seed config must be exactly zero bytes" }
 
       - name: Compile llvmpipe verification helper
         shell: pwsh
