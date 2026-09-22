@@ -19,6 +19,7 @@ internal sealed class MainForm : Form
     private readonly ComboBox _target = new();
     private readonly NumericUpDown _threads = new();
     private readonly CheckBox _scale = new();
+    private readonly CheckBox _stretch = new();
     private readonly CheckBox _restore = new();
     private readonly TextBox _log = new();
     private readonly AccentButton _launch = new();
@@ -156,7 +157,23 @@ internal sealed class MainForm : Form
         _scale.AutoSize = true;
         _scale.ForeColor = TextPrimary;
         _scale.FlatStyle = FlatStyle.Flat;
-        _scale.Margin = new Padding(0, 7, 28, 0);
+        _scale.Margin = new Padding(0, 7, 20, 0);
+        _scale.CheckedChanged += (_, _) =>
+        {
+            UpdateScaleUi();
+            if (!_scale.Checked)
+            {
+                OldGpuCore.StopFullscreenScaler(Log);
+                SetStatus("Полноэкранное масштабирование отключено");
+            }
+        };
+
+        _stretch.Text = "Растягивать изображение";
+        _stretch.Checked = true;
+        _stretch.AutoSize = true;
+        _stretch.ForeColor = TextPrimary;
+        _stretch.FlatStyle = FlatStyle.Flat;
+        _stretch.Margin = new Padding(0, 7, 20, 0);
 
         _restore.Text = "Вернуть разрешение после выхода";
         _restore.Checked = true;
@@ -182,6 +199,7 @@ internal sealed class MainForm : Form
         _threads.Margin = new Padding(0, 4, 0, 0);
 
         bottom.Controls.Add(_scale);
+        bottom.Controls.Add(_stretch);
         bottom.Controls.Add(_restore);
         bottom.Controls.Add(threadLabel);
         bottom.Controls.Add(_threads);
@@ -222,7 +240,7 @@ internal sealed class MainForm : Form
             AutoSize = true,
             Location = new Point(38, 36),
             ForeColor = TextMuted,
-            Text = "Minecraft рендерится на CPU через llvmpipe; Magpie масштабирует готовый кадр."
+            Text = "Minecraft рендерится через llvmpipe; IntegerScaler масштабирует окно средствами Windows."
         };
         card.Controls.Add(desc);
 
@@ -305,7 +323,8 @@ internal sealed class MainForm : Form
         Log($"Windows display modes: {_target.Items.Count}");
         Log($"Render presets: {_source.Items.Count}; custom W×H is also accepted");
         Log("Renderer mode: Mesa llvmpipe (CPU only)");
-        Log("Fullscreen mode: Magpie AutoScale + Nearest Fill");
+        Log("Fullscreen scaler: IntegerScaler 2.20 (Windows magnification, no frame capture)");
+        UpdateScaleUi();
     }
 
     private async Task Launch()
@@ -334,6 +353,7 @@ internal sealed class MainForm : Form
                 _scale.Checked ? th : null,
                 (int)_threads.Value,
                 _scale.Checked,
+                _stretch.Checked,
                 _restore.Checked);
 
             await OldGpuCore.LaunchAsync(cfg, msg =>
@@ -384,7 +404,17 @@ internal sealed class MainForm : Form
         _target.Enabled = !busy;
         _threads.Enabled = !busy;
         _scale.Enabled = !busy;
-        _restore.Enabled = !busy;
+        _stretch.Enabled = !busy && _scale.Checked;
+        _target.Enabled = !busy && _scale.Checked;
+        _restore.Enabled = !busy && _scale.Checked;
+    }
+
+    private void UpdateScaleUi()
+    {
+        bool enabled = _scale.Checked;
+        _target.Enabled = enabled;
+        _stretch.Enabled = enabled;
+        _restore.Enabled = enabled;
     }
 
     private void SetStatus(string text) => _status.Text = text;
