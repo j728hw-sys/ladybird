@@ -9,11 +9,11 @@ Used component: llvmpipe software OpenGL renderer.
 Mesa source files are distributed under their respective open-source licenses.
 See the upstream project for exact per-file license information.
 
-Magpie
-Project: https://github.com/Blinue/Magpie
-Bundled version: v0.12.1 x64
-License: GNU General Public License v3.0.
-The complete corresponding source for this bundled version is available from:
-https://github.com/Blinue/Magpie/tree/v0.12.1
+IntegerScaler
+Project: https://tanalin.com/en/projects/integer-scaler/
+Bundled version: 2.20 x64 (official unmodified binary from the author)
+Status: closed-source freeware.
+IntegerScaler remains the property of its author. See the upstream project page
+for the original download and current terms.
 
 Minecraft On OLD GPU does not include Minecraft itself.
