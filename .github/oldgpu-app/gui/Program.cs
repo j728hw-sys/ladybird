@@ -134,7 +134,7 @@ internal sealed class MainForm : Form
         card.Controls.Add(grid);
 
         grid.Controls.Add(MakeCaption("Рендер Minecraft — любой W×H"), 0, 0);
-        grid.Controls.Add(MakeCaption("Растянуть до — все режимы Windows"), 2, 0);
+        grid.Controls.Add(MakeCaption("Растянуть до — полный каталог"), 2, 0);
 
         StyleCombo(_source);
         StyleCombo(_target);
@@ -320,7 +320,7 @@ internal sealed class MainForm : Form
         _threads.Value = Math.Clamp(Environment.ProcessorCount, 1, 8);
 
         Log($"Desktop: {desktop.Width}x{desktop.Height}");
-        Log($"Windows display modes: {_target.Items.Count}");
+        Log($"Resolution choices: {_target.Items.Count}");
         Log($"Render presets: {_source.Items.Count}; custom W×H is also accepted");
         Log("Renderer mode: Mesa llvmpipe (CPU only)");
         Log("Fullscreen scaler: IntegerScaler 2.20 (Windows magnification, no frame capture)");
