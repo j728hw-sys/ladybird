@@ -93,6 +93,30 @@ jobs:
           }
           $diff
 
+      - name: Apply and verify WGL surface context-preservation fix
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python .github/mobilegl/apply-surface-preserve-fix.py
+          if ($LASTEXITCODE -ne 0) { throw "surface-preserve patcher failed" }
+
+          $d = Get-Content MobileGL/MobileGL/MG_Backend/DirectGLES/DirectGLES.cpp -Raw
+          $b = Get-Content MobileGL/MobileGL/MG_Backend/DirectGLES/BackendObject_DirectGLES.cpp -Raw
+          $marker = "DirectGLES: preserved backend context while switching window surface"
+          if (-not $d.Contains($marker)) { throw "surface-preserve marker absent from DirectGLES.cpp" }
+
+          $start = $b.IndexOf("BackendObject_DirectGLES::CreateEGLWindowSurface")
+          $end = $b.IndexOf("BackendObject_DirectGLES::CreateEGLPbufferSurface")
+          if ($start -lt 0 -or $end -le $start) { throw "cannot locate CreateEGLWindowSurface body" }
+          $windowBody = $b.Substring($start, $end - $start)
+          if ($windowBody.Contains("DestroyEGLContext()")) {
+            throw "destructive context teardown remains in CreateEGLWindowSurface"
+          }
+
+          git -C MobileGL diff --check
+          if ($LASTEXITCODE -ne 0) { throw "surface-preserve patched source failed git diff --check" }
+          git -C MobileGL diff -- MobileGL/MG_Backend/DirectGLES/DirectGLES.cpp MobileGL/MG_Backend/DirectGLES/BackendObject_DirectGLES.cpp
+
       - name: Fetch glslang pinned optimizer dependencies
         shell: pwsh
         run: |
@@ -126,12 +150,16 @@ jobs:
           if (-not $mgl) { throw "MobileGL.dll was not produced" }
           if (-not $ogl) { throw "opengl32.dll drop-in copy was not produced" }
 
-          $marker = "Re-created stale framebuffer object"
           $binaryText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($ogl.FullName))
-          if (-not $binaryText.Contains($marker)) {
+          $fboMarker = "Re-created stale framebuffer object"
+          $surfaceMarker = "DirectGLES: preserved backend context while switching window surface"
+          if (-not $binaryText.Contains($fboMarker)) {
             throw "Built opengl32.dll does NOT contain the HD 2000 FBO fix marker"
           }
-          Write-Host "Verified: built opengl32.dll contains the HD 2000 FBO fix marker."
+          if (-not $binaryText.Contains($surfaceMarker)) {
+            throw "Built opengl32.dll does NOT contain the WGL surface-preserve fix marker"
+          }
+          Write-Host "Verified: built opengl32.dll contains BOTH FBO and WGL surface-preserve fix markers."
 
           Get-Item $mgl.FullName,$ogl.FullName | Format-Table FullName,Length
 
@@ -227,6 +255,35 @@ jobs:
             Write-Host "$name machine=$machineHex"
             if ($machine -ne 0x8664) { throw "$name is not AMD64/x64" }
           }
+
+      - name: Build and run same-HGLRC two-window migration regression
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $vswhere)) { throw "vswhere.exe not found" }
+          $vs = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+          if (-not $vs) { throw "Visual Studio C++ toolchain not found" }
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+
+          Copy-Item .github/mobilegl/wgl_surface_migration.cpp package/wgl_surface_migration.cpp -Force
+          $compile = 'call "' + $vcvars + '" && cl /nologo /EHsc /W3 "package\wgl_surface_migration.cpp" user32.lib gdi32.lib /Fe:"package\wgl_surface_migration.exe"'
+          cmd.exe /d /s /c $compile
+          if ($LASTEXITCODE -ne 0) { throw "migration regression compilation failed: $LASTEXITCODE" }
+
+          Push-Location package
+          try {
+            $env:MOBILEGL_BACKEND_TYPE = "DirectGLES"
+            $env:MOBILEGL_LOG_FILE_PATH = (Join-Path $PWD "wgl-migration-mobilegl.log")
+            $env:PATH = "$PWD;$env:PATH"
+            .\wgl_surface_migration.exe
+            if ($LASTEXITCODE -ne 0) { throw "same-HGLRC migration regression FAILED: $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
+
+          Remove-Item package/wgl_surface_migration.cpp,package/wgl_surface_migration.exe -Force -ErrorAction SilentlyContinue
 
       - name: Build and run official MobileGL WGL smoke test
         shell: pwsh
