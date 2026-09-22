@@ -52,3 +52,9 @@ The launcher backs up Java OpenGL files before replacing them. Use the
 "Restore OpenGL" button or:
   MinecraftOnOldGPU.CLI.exe restore
 to restore the backed-up files.
+
+
+System requirement
+------------------
+.NET 8 Desktop Runtime x64 must already be installed in Windows.
+The GUI and CLI do NOT embed or bundle the .NET runtime.
