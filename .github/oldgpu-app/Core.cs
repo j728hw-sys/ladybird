@@ -13,7 +13,8 @@ public sealed record LaunchConfig(
     int LlvmThreads,
     bool FullscreenUpscale,
     bool StretchImage,
-    bool RestoreDisplayAfterExit = true);
+    bool RestoreDisplayAfterExit = true,
+    bool NativeIntelGpu = false);
 
 public sealed record DisplayResolution(int Width, int Height)
 {
@@ -30,6 +31,8 @@ public static class OldGpuCore
     public static string MesaDir => Path.Combine(AppDir, "runtime", "mesa");
     public static string IntegerScalerDir => Path.Combine(AppDir, "runtime", "integer-scaler");
     public static string IntegerScalerExe => Path.Combine(IntegerScalerDir, "IntegerScaler_64bit.exe");
+    public static string NativeIntelAgentJar => Path.Combine(
+        AppDir, "runtime", "native-intel", "HD2000NativeAgent.jar");
 
     private static readonly string[] ManagedFiles =
     {
@@ -198,7 +201,7 @@ public static class OldGpuCore
     {
         log ??= _ => { };
 
-        ValidateBundle(cfg.FullscreenUpscale);
+        ValidateBundle(cfg.FullscreenUpscale, cfg.NativeIntelGpu);
 
         // Always terminate scalers left by an older launch first. This makes
         // "Fullscreen scaling = OFF" a real OFF state instead of leaving the
@@ -208,8 +211,17 @@ public static class OldGpuCore
         if (!File.Exists(LauncherExe))
             throw new FileNotFoundException($"Legacy Launcher не найден: {LauncherExe}");
 
-        log("Подготавливаю Mesa llvmpipe...");
-        InstallMesaToLegacyJava(log);
+        if (cfg.NativeIntelGpu)
+        {
+            log("Нативный режим Intel HD 2000: возвращаю оригинальный OpenGL драйвер Java...");
+            RestoreOriginalOpenGl(log);
+            log("Mesa llvmpipe отключён; рендер должен идти через родной Intel OpenGL.");
+        }
+        else
+        {
+            log("Подготавливаю Mesa llvmpipe...");
+            InstallMesaToLegacyJava(log);
+        }
 
         log($"Ставлю Minecraft {cfg.SourceWidth}×{cfg.SourceHeight}, оконный режим...");
         PatchMinecraftOptions(cfg.SourceWidth, cfg.SourceHeight, log);
@@ -231,13 +243,35 @@ public static class OldGpuCore
                 UseShellExecute = false
             };
 
-            psi.Environment["GALLIUM_DRIVER"] = "llvmpipe";
-            psi.Environment["LIBGL_ALWAYS_SOFTWARE"] = "true";
-            psi.Environment["MESA_LOADER_DRIVER_OVERRIDE"] = "llvmpipe";
-            psi.Environment["LP_NUM_THREADS"] = Math.Clamp(cfg.LlvmThreads, 1, 32).ToString();
-            psi.Environment["PATH"] = $"{MesaDir};{psi.Environment["PATH"]}";
+            if (cfg.NativeIntelGpu)
+            {
+                // Do not let stale software-renderer variables leak into native mode.
+                psi.Environment.Remove("GALLIUM_DRIVER");
+                psi.Environment.Remove("LIBGL_ALWAYS_SOFTWARE");
+                psi.Environment.Remove("MESA_LOADER_DRIVER_OVERRIDE");
+                psi.Environment.Remove("LP_NUM_THREADS");
 
-            log($"Запускаю Legacy Launcher. llvmpipe threads: {cfg.LlvmThreads}");
+                string agentOption = $"-javaagent:\"{NativeIntelAgentJar}\"";
+                string? existingJavaOptions = psi.Environment.TryGetValue("_JAVA_OPTIONS", out var javaOptions)
+                    ? javaOptions
+                    : null;
+                psi.Environment["_JAVA_OPTIONS"] = string.IsNullOrWhiteSpace(existingJavaOptions)
+                    ? agentOption
+                    : existingJavaOptions + " " + agentOption;
+
+                log("Запускаю Legacy Launcher: НАТИВНЫЙ Intel HD 2000 / OpenGL 3.1 compatibility agent.");
+                log("CPU llvmpipe в этом режиме не используется.");
+            }
+            else
+            {
+                psi.Environment["GALLIUM_DRIVER"] = "llvmpipe";
+                psi.Environment["LIBGL_ALWAYS_SOFTWARE"] = "true";
+                psi.Environment["MESA_LOADER_DRIVER_OVERRIDE"] = "llvmpipe";
+                psi.Environment["LP_NUM_THREADS"] = Math.Clamp(cfg.LlvmThreads, 1, 32).ToString();
+                psi.Environment["PATH"] = $"{MesaDir};{psi.Environment["PATH"]}";
+
+                log($"Запускаю Legacy Launcher. llvmpipe threads: {cfg.LlvmThreads}");
+            }
 
             _ = Process.Start(psi)
                 ?? throw new InvalidOperationException("Не удалось запустить Legacy Launcher.");
@@ -313,14 +347,23 @@ public static class OldGpuCore
         }
     }
 
-    private static void ValidateBundle(bool requireScaler)
+    private static void ValidateBundle(bool requireScaler, bool nativeIntelGpu)
     {
-        foreach (var name in new[] { "opengl32.dll", "libgallium_wgl.dll" })
+        if (nativeIntelGpu)
         {
-            var p = Path.Combine(MesaDir, name);
+            if (!File.Exists(NativeIntelAgentJar))
+                throw new FileNotFoundException(
+                    $"Не найден модуль нативного Intel HD 2000: {NativeIntelAgentJar}");
+        }
+        else
+        {
+            foreach (var name in new[] { "opengl32.dll", "libgallium_wgl.dll" })
+            {
+                var p = Path.Combine(MesaDir, name);
 
-            if (!File.Exists(p))
-                throw new FileNotFoundException($"Не найден Mesa runtime: {p}");
+                if (!File.Exists(p))
+                    throw new FileNotFoundException($"Не найден Mesa runtime: {p}");
+            }
         }
 
         if (requireScaler && !File.Exists(IntegerScalerExe))
