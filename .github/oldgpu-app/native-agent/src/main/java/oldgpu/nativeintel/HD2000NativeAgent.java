@@ -541,6 +541,7 @@ public final class HD2000NativeAgent {
                 throw new IllegalStateException("Expected 2 GlDevice SDL version reads, got " + changed);
             }
             int capHooks = 0;
+            int srgbFixes = 0;
             for (MethodNode method : cn.methods) {
                 for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
                     if (insn instanceof MethodInsnNode) {
@@ -558,6 +559,17 @@ public final class HD2000NativeAgent {
                                 false));
                             method.instructions.insert(insn, hook);
                             capHooks++;
+                        } else if ("org/lwjgl/opengl/GL33C".equals(call.owner)
+                                && "glEnable".equals(call.name)
+                                && "(I)V".equals(call.desc)) {
+                            AbstractInsnNode arg = previousReal(insn);
+                            Integer value = intValue(arg);
+                            if (value != null && value == 34895) {
+                                // Sandy Bridge Intel Windows drivers have known
+                                // GL_FRAMEBUFFER_SRGB rendering bugs. Keep it off.
+                                call.name = "glDisable";
+                                srgbFixes++;
+                            }
                         }
                     }
                 }
@@ -565,8 +577,12 @@ public final class HD2000NativeAgent {
             if (capHooks < 1) {
                 throw new IllegalStateException("GL.createCapabilities hook not found");
             }
+            if (srgbFixes < 1) {
+                throw new IllegalStateException("GL_FRAMEBUFFER_SRGB enable call not found");
+            }
             logLine("GlDevice: " + changed
-                + " version checks bridged; capabilities hook=" + capHooks);
+                + " version checks bridged; capabilities hook=" + capHooks
+                + "; framebuffer-sRGB disabled=" + srgbFixes);
             return write(cn);
         }
 
