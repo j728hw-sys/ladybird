@@ -196,7 +196,10 @@ public final class HD2000NativeAgent {
                     java.lang.reflect.Field dsaField = c.getDeclaredField("dsa");
                     dsaField.setAccessible(true);
                     Object dsa = dsaField.get(transientMemory);
-                    Method subData = dsa.getClass().getMethod(
+                    ClassLoader loader = Thread.currentThread().getContextClassLoader();
+                    Class<?> dsaBase = Class.forName(
+                        "com.mojang.renderpearl.backend.opengl.DirectStateAccess", true, loader);
+                    Method subData = dsaBase.getMethod(
                         "bufferSubData", int.class, long.class, ByteBuffer.class, int.class);
                     subData.invoke(dsa, handle, offset, packed, usage);
                     return slice;
@@ -219,7 +222,7 @@ public final class HD2000NativeAgent {
             List<ByteBuffer> one = new ArrayList<ByteBuffer>(1);
             one.add(src);
             result.add(uploadGpuNoMap(
-                transientMemory, one, alignment, usage, size, Math.max(1L, size)));
+                transientMemory, one, alignment, usage, size, 1L));
         }
         return result;
     }
