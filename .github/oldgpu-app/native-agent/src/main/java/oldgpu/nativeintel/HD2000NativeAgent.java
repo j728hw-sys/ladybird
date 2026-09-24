@@ -3,9 +3,13 @@ package oldgpu.nativeintel;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.IllegalClassFormatException;
 import java.lang.instrument.Instrumentation;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.lang.reflect.Method;
 import java.nio.IntBuffer;
 import java.security.ProtectionDomain;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
@@ -31,6 +35,62 @@ public final class HD2000NativeAgent {
     public static void premain(String agentArgs, Instrumentation inst) {
         System.err.println(PREFIX + "agent active; waiting for Minecraft 26.3 RenderPearl classes");
         inst.addTransformer(new Transformer(), false);
+    }
+
+    public static void main(String[] args) throws Exception {
+        if (args.length != 2 || !"--selftest".equals(args[0])) {
+            System.err.println("Usage: HD2000NativeAgent --selftest <minecraft-26.3-client.jar>");
+            System.exit(2);
+            return;
+        }
+
+        Transformer transformer = new Transformer();
+        String[] targets = {
+            Transformer.GL_BACKEND,
+            Transformer.GL_DEVICE,
+            Transformer.GL_RECOMPILER,
+            Transformer.VERTEX_ARRAY_EMULATED
+        };
+
+        JarFile jar = new JarFile(args[1]);
+        try {
+            for (String target : targets) {
+                JarEntry entry = jar.getJarEntry(target + ".class");
+                if (entry == null) {
+                    throw new IllegalStateException("Minecraft 26.3 class missing: " + target);
+                }
+
+                byte[] original;
+                InputStream in = jar.getInputStream(entry);
+                try {
+                    original = readAll(in);
+                } finally {
+                    in.close();
+                }
+
+                byte[] patched = transformer.transform(null, target, null, null, original);
+                if (patched == null || patched.length == 0) {
+                    throw new IllegalStateException("Transformer did not patch: " + target);
+                }
+
+                // Parse the result once more to ensure the rewritten class file is structurally valid.
+                new ClassReader(patched);
+            }
+        } finally {
+            jar.close();
+        }
+
+        System.out.println(PREFIX + "Minecraft 26.3 bytecode self-test PASSED");
+    }
+
+    private static byte[] readAll(InputStream in) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buffer = new byte[16384];
+        int read;
+        while ((read = in.read(buffer)) >= 0) {
+            out.write(buffer, 0, read);
+        }
+        return out.toByteArray();
     }
 
     /**
@@ -59,10 +119,10 @@ public final class HD2000NativeAgent {
     }
 
     private static final class Transformer implements ClassFileTransformer {
-        private static final String GL_BACKEND = "com/mojang/renderpearl/backend/opengl/GlBackend";
-        private static final String GL_DEVICE = "com/mojang/renderpearl/backend/opengl/GlDevice";
-        private static final String GL_RECOMPILER = "com/mojang/renderpearl/backend/opengl/GlPipelineRecompiler";
-        private static final String VERTEX_ARRAY_EMULATED = "com/mojang/renderpearl/backend/opengl/VertexArray$Emulated";
+        static final String GL_BACKEND = "com/mojang/renderpearl/backend/opengl/GlBackend";
+        static final String GL_DEVICE = "com/mojang/renderpearl/backend/opengl/GlDevice";
+        static final String GL_RECOMPILER = "com/mojang/renderpearl/backend/opengl/GlPipelineRecompiler";
+        static final String VERTEX_ARRAY_EMULATED = "com/mojang/renderpearl/backend/opengl/VertexArray$Emulated";
 
         @Override
         public byte[] transform(
@@ -135,6 +195,9 @@ public final class HD2000NativeAgent {
                 }
             }
 
+            if (changed < 3) {
+                throw new IllegalStateException("Expected at least 3 GlBackend context patches, got " + changed);
+            }
             System.err.println(PREFIX + "GlBackend: " + changed + " context attributes patched for OpenGL 3.1");
             return write(cn);
         }
@@ -161,6 +224,9 @@ public final class HD2000NativeAgent {
                 }
             }
 
+            if (changed < 2) {
+                throw new IllegalStateException("Expected 2 GlDevice SDL version reads, got " + changed);
+            }
             System.err.println(PREFIX + "GlDevice: " + changed + " version checks bridged; real GL capabilities stay untouched");
             return write(cn);
         }
@@ -193,6 +259,9 @@ public final class HD2000NativeAgent {
                 }
             }
 
+            if (changed < 1) {
+                throw new IllegalStateException("GLSL 330 target was not found in GlPipelineRecompiler");
+            }
             System.err.println(PREFIX + "GlPipelineRecompiler: " + changed + " GLSL target(s) changed 330 -> 140");
             return write(cn);
         }
@@ -221,6 +290,9 @@ public final class HD2000NativeAgent {
                 }
             }
 
+            if (changed < 1) {
+                throw new IllegalStateException("glVertexAttribDivisor call was not found in VertexArray.Emulated");
+            }
             System.err.println(PREFIX + "VertexArray.Emulated: " + changed + " instancing call(s) redirected to ARB");
             return write(cn);
         }
