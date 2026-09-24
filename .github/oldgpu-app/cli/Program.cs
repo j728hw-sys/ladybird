@@ -33,7 +33,7 @@ internal static class CliProgram
             int threads = Math.Clamp(Environment.ProcessorCount, 1, 8);
             bool scale = true;
             bool stretch = true;
-            bool restoreDisplay = false;
+            bool restoreDisplay = true;
 
             for (int i = 1; i < args.Length; i++)
             {
@@ -57,7 +57,6 @@ internal static class CliProgram
                         stretch = false;
                         break;
                     case "--keep-display-mode":
-                        // Compatibility no-op: display mode is never changed anymore.
                         restoreDisplay = false;
                         break;
                     default:
@@ -122,11 +121,11 @@ Minecraft On OLD GPU CLI
 
 Параметры launch:
   -s, --source 320x180       Разрешение рендера Minecraft
-  -t, --target 1920x1080     Целевой размер масштабированной картинки
+  -t, --target 1920x1080     Разрешение экрана перед fullscreen upscale
       --threads 4            Потоки llvmpipe
       --no-scale             Не запускать полноэкранный scaler
       --no-stretch           Не растягивать изображение: 1:1 по центру
-      --keep-display-mode    Совместимость: теперь режим Windows всегда сохраняется
+      --keep-display-mode    Не возвращать старое разрешение после выхода
 
 Примеры:
   MinecraftOnOldGPU.CLI.exe launch -s 320x180
