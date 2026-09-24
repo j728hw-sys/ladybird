@@ -33,6 +33,7 @@ public static class OldGpuCore
     public static string IntegerScalerExe => Path.Combine(IntegerScalerDir, "IntegerScaler_64bit.exe");
     public static string NativeIntelAgentJar => Path.Combine(
         AppDir, "runtime", "native-intel", "HD2000NativeAgent.jar");
+    public static string NativeIntelLogPath => Path.Combine(AppDir, "HD2000Native.log");
 
     private static readonly string[] ManagedFiles =
     {
@@ -251,6 +252,22 @@ public static class OldGpuCore
                 psi.Environment.Remove("MESA_LOADER_DRIVER_OVERRIDE");
                 psi.Environment.Remove("LP_NUM_THREADS");
 
+                try
+                {
+                    File.WriteAllText(
+                        NativeIntelLogPath,
+                        $"Minecraft On OLD GPU — native Intel diagnostic log{Environment.NewLine}" +
+                        $"Started: {DateTime.Now:O}{Environment.NewLine}" +
+                        $"EXE directory: {AppDir}{Environment.NewLine}{Environment.NewLine}",
+                        new UTF8Encoding(false));
+                }
+                catch (Exception ex)
+                {
+                    log($"Не удалось создать диагностический лог: {ex.Message}");
+                }
+
+                psi.Environment["OLDGPU_NATIVE_LOG"] = NativeIntelLogPath;
+
                 string agentOption = $"-javaagent:\"{NativeIntelAgentJar}\"";
                 string? existingJavaOptions = psi.Environment.TryGetValue("_JAVA_OPTIONS", out var javaOptions)
                     ? javaOptions
@@ -261,9 +278,11 @@ public static class OldGpuCore
 
                 log("Запускаю Legacy Launcher: НАТИВНЫЙ Intel HD 2000 / OpenGL 3.1 compatibility agent.");
                 log("CPU llvmpipe в этом режиме не используется.");
+                log($"Native log: {NativeIntelLogPath}");
             }
             else
             {
+                psi.Environment.Remove("OLDGPU_NATIVE_LOG");
                 psi.Environment["GALLIUM_DRIVER"] = "llvmpipe";
                 psi.Environment["LIBGL_ALWAYS_SOFTWARE"] = "true";
                 psi.Environment["MESA_LOADER_DRIVER_OVERRIDE"] = "llvmpipe";
