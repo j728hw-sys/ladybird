@@ -18,6 +18,7 @@ internal sealed class MainForm : Form
     private readonly ComboBox _source = new();
     private readonly ComboBox _target = new();
     private readonly NumericUpDown _threads = new();
+    private readonly CheckBox _nativeIntel = new();
     private readonly CheckBox _scale = new();
     private readonly CheckBox _stretch = new();
     private readonly CheckBox _restore = new();
@@ -25,6 +26,7 @@ internal sealed class MainForm : Form
     private readonly AccentButton _launch = new();
     private readonly FlatButton _restoreOpenGl = new();
     private readonly Label _status = new();
+    private readonly Label _statusDesc = new();
 
     private readonly Color Bg = Color.FromArgb(15, 18, 17);
     private readonly Color Card = Color.FromArgb(25, 31, 29);
@@ -100,7 +102,7 @@ internal sealed class MainForm : Form
             Location = new Point(79, 49),
             ForeColor = TextMuted,
             Font = new Font("Segoe UI", 10.5f),
-            Text = "Mesa llvmpipe CPU renderer • low-resolution render • fullscreen upscale"
+            Text = "CPU llvmpipe или нативный Intel HD 2000 • low-resolution render • fullscreen upscale"
         };
         panel.Controls.Add(sub);
 
@@ -152,6 +154,14 @@ internal sealed class MainForm : Form
             BackColor = Card
         };
 
+        _nativeIntel.Text = "Нативный Intel HD 2000 (эксперимент)";
+        _nativeIntel.Checked = false;
+        _nativeIntel.AutoSize = true;
+        _nativeIntel.ForeColor = TextPrimary;
+        _nativeIntel.FlatStyle = FlatStyle.Flat;
+        _nativeIntel.Margin = new Padding(0, 7, 20, 0);
+        _nativeIntel.CheckedChanged += (_, _) => UpdateRendererUi();
+
         _scale.Text = "Полноэкранное масштабирование";
         _scale.Checked = true;
         _scale.AutoSize = true;
@@ -199,6 +209,7 @@ internal sealed class MainForm : Form
         _threads.BorderStyle = BorderStyle.FixedSingle;
         _threads.Margin = new Padding(0, 4, 0, 0);
 
+        bottom.Controls.Add(_nativeIntel);
         bottom.Controls.Add(_scale);
         bottom.Controls.Add(_stretch);
         bottom.Controls.Add(_restore);
@@ -236,14 +247,11 @@ internal sealed class MainForm : Form
         _status.Text = "Готово к запуску";
         card.Controls.Add(_status);
 
-        var desc = new Label
-        {
-            AutoSize = true,
-            Location = new Point(38, 36),
-            ForeColor = TextMuted,
-            Text = "Minecraft рендерится через llvmpipe; IntegerScaler масштабирует окно средствами Windows."
-        };
-        card.Controls.Add(desc);
+        _statusDesc.AutoSize = true;
+        _statusDesc.Location = new Point(38, 36);
+        _statusDesc.ForeColor = TextMuted;
+        _statusDesc.Text = "Minecraft рендерится через llvmpipe; IntegerScaler масштабирует окно средствами Windows.";
+        card.Controls.Add(_statusDesc);
 
         return card;
     }
@@ -327,9 +335,10 @@ internal sealed class MainForm : Form
         Log($"Desktop: {desktop.Width}x{desktop.Height}");
         Log($"Resolution choices: {_target.Items.Count}");
         Log($"Render presets: {_source.Items.Count}; custom W×H is also accepted");
-        Log("Renderer mode: Mesa llvmpipe (CPU only)");
+        Log("Renderer mode default: Mesa llvmpipe (CPU). Native Intel HD 2000 is available as a separate experimental checkbox.");
         Log("Fullscreen scaler: IntegerScaler 2.20; Windows display mode switching is disabled");
         UpdateScaleUi();
+        UpdateRendererUi();
     }
 
     private async Task Launch()
@@ -359,7 +368,8 @@ internal sealed class MainForm : Form
                 (int)_threads.Value,
                 _scale.Checked,
                 _stretch.Checked,
-                _restore.Checked);
+                _restore.Checked,
+                _nativeIntel.Checked);
 
             await OldGpuCore.LaunchAsync(cfg, msg =>
             {
@@ -407,7 +417,8 @@ internal sealed class MainForm : Form
         _restoreOpenGl.Enabled = !busy;
         _source.Enabled = !busy;
         _target.Enabled = !busy;
-        _threads.Enabled = !busy;
+        _threads.Enabled = !busy && !_nativeIntel.Checked;
+        _nativeIntel.Enabled = !busy;
         _scale.Enabled = !busy;
         _stretch.Enabled = !busy && _scale.Checked;
         _target.Enabled = !busy && _scale.Checked;
@@ -420,6 +431,23 @@ internal sealed class MainForm : Form
         _target.Enabled = enabled;
         _stretch.Enabled = enabled;
         _restore.Enabled = false;
+    }
+
+    private void UpdateRendererUi()
+    {
+        bool native = _nativeIntel.Checked;
+        _threads.Enabled = !native && _launch.Enabled;
+
+        if (native)
+        {
+            _statusDesc.Text = "Нативный режим: Minecraft 26.3 использует родной Intel OpenGL 3.1; llvmpipe отключён.";
+            Log("Renderer selected: native Intel HD 2000 (experimental)");
+        }
+        else
+        {
+            _statusDesc.Text = "Minecraft рендерится через llvmpipe; IntegerScaler масштабирует окно средствами Windows.";
+            Log("Renderer selected: Mesa llvmpipe (CPU)");
+        }
     }
 
     private void SetStatus(string text) => _status.Text = text;
