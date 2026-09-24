@@ -16,4 +16,9 @@ Status: closed-source freeware.
 IntegerScaler remains the property of its author. See the upstream project page
 for the original download and current terms.
 
+OW2 ASM
+Project: https://asm.ow2.io/
+Bundled version: 9.10.1, shaded only into HD2000NativeAgent.jar.
+License: BSD 3-Clause.
+
 Minecraft On OLD GPU does not include Minecraft itself.
