@@ -11,7 +11,7 @@ What it does
 3. Keeps Minecraft windowed internally.
 4. Starts IntegerScaler 2.20 and scales the existing low-resolution window via
    the Windows magnification mechanism without frame capture.
-5. Lets you choose source resolution, scaled-image target size and llvmpipe thread count.
+5. Lets you choose source resolution, output/display resolution and llvmpipe thread count.
 6. Works with Legacy Launcher:
    %APPDATA%\.tlauncher\legacy\Minecraft\TL.exe
 
@@ -35,7 +35,7 @@ Render: 320x180
 Output: current monitor resolution
 llvmpipe threads: 4
 Fullscreen upscale: ON
-Windows display mode: NEVER CHANGED
+Restore display mode after exit: ON
 
 CLI examples
 ------------
@@ -47,9 +47,8 @@ Important
 ---------
 Do NOT enable Minecraft's own fullscreen mode when using fullscreen upscale.
 Minecraft must remain windowed at the low source resolution. IntegerScaler keeps
-that real low-resolution window and presents the already-rendered image fullscreen.
-The launcher never calls ChangeDisplaySettings for fullscreen upscale, so Windows
-stays at the desktop mode and Minecraft is not switched to desktop-size rendering.
+that real low-resolution window and presents it fullscreen without making Minecraft
+render at the desktop resolution.
 
 The launcher backs up Java OpenGL files before replacing them. Use the
 "Restore OpenGL" button or:
