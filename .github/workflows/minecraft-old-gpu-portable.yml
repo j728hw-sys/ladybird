@@ -45,6 +45,20 @@ jobs:
           if (-not ($listing | Where-Object { $_ -eq "org/objectweb/asm/ClassReader.class" })) { throw "ASM was not shaded into native agent" }
           Write-Host "Native agent built successfully"
 
+      - name: Validate native agent against official Minecraft 26.3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $manifest = Invoke-RestMethod "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
+          $version = $manifest.versions | Where-Object { $_.id -eq "26.3" } | Select-Object -First 1
+          if (-not $version) { throw "Minecraft 26.3 not found in Mojang version manifest" }
+          $meta = Invoke-RestMethod $version.url
+          if (-not $meta.downloads.client.url) { throw "Minecraft 26.3 client URL missing" }
+          Invoke-WebRequest -Uri $meta.downloads.client.url -OutFile minecraft-26.3-client.jar
+          & java -cp .github/oldgpu-app/native-agent/target/HD2000NativeAgent.jar oldgpu.nativeintel.HD2000NativeAgent --selftest minecraft-26.3-client.jar
+          if ($LASTEXITCODE -ne 0) { throw "Native agent Minecraft 26.3 bytecode self-test failed" }
+          Remove-Item minecraft-26.3-client.jar -Force
+
       - name: Publish GUI
         shell: pwsh
         run: |
