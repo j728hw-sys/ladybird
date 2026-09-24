@@ -32,6 +32,8 @@ import org.objectweb.asm.tree.MethodNode;
  */
 public final class HD2000NativeAgent {
     private static final String PREFIX = "[HD2000 Native] ";
+    private static final ConcurrentHashMap<Integer, String> SHADER_SOURCES =
+        new ConcurrentHashMap<Integer, String>();
 
     public static void premain(String agentArgs, Instrumentation inst) {
         System.err.println(PREFIX + "agent active; waiting for Minecraft 26.3 RenderPearl classes");
@@ -107,6 +109,62 @@ public final class HD2000NativeAgent {
             value.put(0, 3);
         }
         return ok;
+    }
+
+    public static void shaderSourceWithDiagnostics(int shaderId, String source) {
+        SHADER_SOURCES.put(Integer.valueOf(shaderId), source);
+        try {
+            ClassLoader loader = Thread.currentThread().getContextClassLoader();
+            Class<?> state = Class.forName(
+                "com.mojang.renderpearl.backend.opengl.GlStateManager", true, loader);
+            Method method = state.getMethod("glShaderSource", int.class, String.class);
+            method.invoke(null, shaderId, source);
+        } catch (Throwable t) {
+            throw new RuntimeException("HD2000 glShaderSource bridge failed", t);
+        }
+    }
+
+    public static void compileShaderWithDiagnostics(int shaderId) {
+        try {
+            ClassLoader loader = Thread.currentThread().getContextClassLoader();
+            Class<?> state = Class.forName(
+                "com.mojang.renderpearl.backend.opengl.GlStateManager", true, loader);
+            Method compile = state.getMethod("glCompileShader", int.class);
+            Method getStatus = state.getMethod("glGetShaderi", int.class, int.class);
+            Method getLog = state.getMethod("glGetShaderInfoLog", int.class, int.class);
+
+            compile.invoke(null, shaderId);
+            int status = ((Integer) getStatus.invoke(null, shaderId, 35713)).intValue();
+            if (status == 0) {
+                String info = String.valueOf(getLog.invoke(null, shaderId, 32768));
+                writeShaderFailure(shaderId, info, SHADER_SOURCES.get(Integer.valueOf(shaderId)));
+            } else {
+                SHADER_SOURCES.remove(Integer.valueOf(shaderId));
+            }
+        } catch (Throwable t) {
+            throw new RuntimeException("HD2000 glCompileShader bridge failed", t);
+        }
+    }
+
+    private static void writeShaderFailure(int shaderId, String info, String source) {
+        try {
+            Path dir = Paths.get(System.getProperty("java.io.tmpdir"), "MinecraftOnOldGPU");
+            Files.createDirectories(dir);
+            Path log = dir.resolve("HD2000Native-shader-errors.log");
+            String text = "\r\n===== shader " + shaderId + " =====\r\n"
+                + "COMPILE ERROR:\r\n" + info + "\r\n"
+                + "GENERATED GLSL:\r\n" + (source == null ? "<missing>" : source)
+                + "\r\n===== end shader " + shaderId + " =====\r\n";
+            Files.write(
+                log,
+                text.getBytes(StandardCharsets.UTF_8),
+                StandardOpenOption.CREATE,
+                StandardOpenOption.APPEND);
+            System.err.println(PREFIX + "shader " + shaderId
+                + " failed; diagnostics: " + log.toAbsolutePath());
+        } catch (Throwable ignored) {
+            System.err.println(PREFIX + "unable to write shader diagnostics: " + ignored);
+        }
     }
 
     /**
@@ -371,6 +429,7 @@ public final class HD2000NativeAgent {
         private byte[] patchGlPipelineRecompiler(byte[] bytes) {
             ClassNode cn = read(bytes);
             int changed = 0;
+            int diagnostics = 0;
 
             for (MethodNode method : cn.methods) {
                 for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
@@ -378,20 +437,35 @@ public final class HD2000NativeAgent {
                         continue;
                     }
                     MethodInsnNode call = (MethodInsnNode) insn;
-                    if (!"org/lwjgl/util/spvc/Spvc".equals(call.owner)
-                            || !"spvc_compiler_options_set_uint".equals(call.name)) {
-                        continue;
-                    }
 
-                    AbstractInsnNode valueNode = previousReal(insn);
-                    AbstractInsnNode optionNode = previousReal(valueNode);
-                    Integer option = intValue(optionNode);
-                    Integer value = intValue(valueNode);
+                    if ("org/lwjgl/util/spvc/Spvc".equals(call.owner)
+                            && "spvc_compiler_options_set_uint".equals(call.name)) {
+                        AbstractInsnNode valueNode = previousReal(insn);
+                        AbstractInsnNode optionNode = previousReal(valueNode);
+                        Integer option = intValue(optionNode);
+                        Integer value = intValue(valueNode);
 
-                    // SPVC_COMPILER_OPTION_GLSL_VERSION (0x02000008)
-                    if (option != null && option == 33554440 && value != null && value == 330) {
-                        replaceInt(method, valueNode, 140);
-                        changed++;
+                        // SPVC_COMPILER_OPTION_GLSL_VERSION (0x02000008)
+                        if (option != null && option == 33554440 && value != null && value == 330) {
+                            replaceInt(method, valueNode, 140);
+                            changed++;
+                        }
+                    } else if ("com/mojang/renderpearl/backend/opengl/GlStateManager".equals(call.owner)
+                            && "glShaderSource".equals(call.name)
+                            && "(ILjava/lang/String;)V".equals(call.desc)) {
+                        call.owner = "oldgpu/nativeintel/HD2000NativeAgent";
+                        call.name = "shaderSourceWithDiagnostics";
+                        call.itf = false;
+                        call.setOpcode(Opcodes.INVOKESTATIC);
+                        diagnostics++;
+                    } else if ("com/mojang/renderpearl/backend/opengl/GlStateManager".equals(call.owner)
+                            && "glCompileShader".equals(call.name)
+                            && "(I)V".equals(call.desc)) {
+                        call.owner = "oldgpu/nativeintel/HD2000NativeAgent";
+                        call.name = "compileShaderWithDiagnostics";
+                        call.itf = false;
+                        call.setOpcode(Opcodes.INVOKESTATIC);
+                        diagnostics++;
                     }
                 }
             }
@@ -399,7 +473,11 @@ public final class HD2000NativeAgent {
             if (changed < 1) {
                 throw new IllegalStateException("GLSL 330 target was not found in GlPipelineRecompiler");
             }
-            System.err.println(PREFIX + "GlPipelineRecompiler: " + changed + " GLSL target(s) changed 330 -> 140");
+            if (diagnostics < 2) {
+                throw new IllegalStateException("Shader diagnostic hooks were not found");
+            }
+            System.err.println(PREFIX + "GlPipelineRecompiler: " + changed
+                + " GLSL target(s) changed 330 -> 140; diagnostics hooks=" + diagnostics);
             return write(cn);
         }
 
