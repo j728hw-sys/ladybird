@@ -214,17 +214,24 @@ public static class OldGpuCore
         log($"Ставлю Minecraft {cfg.SourceWidth}×{cfg.SourceHeight}, оконный режим...");
         PatchMinecraftOptions(cfg.SourceWidth, cfg.SourceHeight, log);
 
-        // IMPORTANT: never change the Windows display mode for fullscreen upscale.
-        // Minecraft must keep rendering into its small window; the scaler only
-        // magnifies that already rendered low-resolution image.
-        if (cfg.FullscreenUpscale)
+        DEVMODE? originalMode = null;
+
+        if (cfg.TargetWidth is int tw && cfg.TargetHeight is int th)
         {
             var desktop = GetDesktopResolution();
-            int targetW = cfg.TargetWidth ?? desktop.Width;
-            int targetH = cfg.TargetHeight ?? desktop.Height;
-            log($"Windows остаётся {desktop.Width}×{desktop.Height}; low-res кадр будет масштабирован до области {targetW}×{targetH}.");
+            if (desktop.Width != tw || desktop.Height != th)
+            {
+                originalMode = GetCurrentDisplayMode();
+                log($"Переключаю экран {desktop.Width}×{desktop.Height} → {tw}×{th}...");
+
+                if (!SetDisplayMode(tw, th))
+                    throw new InvalidOperationException(
+                        $"Windows/драйвер не поддерживает режим {tw}×{th}.");
+            }
         }
 
+        try
+        {
             var psi = new ProcessStartInfo(LauncherExe)
             {
                 WorkingDirectory = LauncherRoot,
@@ -261,8 +268,6 @@ public static class OldGpuCore
                     hwnd,
                     cfg.SourceWidth,
                     cfg.SourceHeight,
-                    cfg.TargetWidth,
-                    cfg.TargetHeight,
                     cfg.StretchImage,
                     log,
                     ct);
@@ -278,6 +283,22 @@ public static class OldGpuCore
                 log("Полноэкранное масштабирование отключено: обычное низкое окно Minecraft.");
             }
 
+            if (cfg.RestoreDisplayAfterExit && originalMode is not null)
+            {
+                log("Жду закрытия Minecraft, чтобы вернуть исходное разрешение экрана.");
+
+                while (IsWindow(hwnd) && !ct.IsCancellationRequested)
+                    await Task.Delay(1000, ct);
+            }
+        }
+        finally
+        {
+            if (cfg.RestoreDisplayAfterExit && originalMode is DEVMODE dm)
+            {
+                log("Возвращаю исходное разрешение экрана...");
+                ChangeDisplaySettings(ref dm, 0);
+            }
+        }
     }
 
     public static void RestoreOriginalOpenGl(Action<string>? log = null)
@@ -567,8 +588,6 @@ public static class OldGpuCore
         IntPtr hwnd,
         int sourceWidth,
         int sourceHeight,
-        int? targetWidth,
-        int? targetHeight,
         bool stretchImage,
         Action<string> log,
         CancellationToken ct)
@@ -587,44 +606,25 @@ public static class OldGpuCore
         {
             "-locale", "ru",
             "-nohotkeys",
-            // -resize only makes the Minecraft client area match the low render size.
-            // IntegerScaler's own documentation explicitly says this option is NOT
-            // what enables scaling.
             "-resize", $"{sourceWidth}x{sourceHeight}"
         };
 
-        var desktop = GetDesktopResolution();
-        int requestedTargetW = targetWidth ?? desktop.Width;
-        int requestedTargetH = targetHeight ?? desktop.Height;
-
         if (stretchImage)
         {
-            double ratioX = requestedTargetW / (double)sourceWidth;
-            double ratioY = requestedTargetH / (double)sourceHeight;
-            double ratio = Math.Min(ratioX, ratioY);
-
-            if (ratio < 1.0)
-                throw new InvalidOperationException(
-                    $"Целевой размер {requestedTargetW}×{requestedTargetH} меньше исходного {sourceWidth}×{sourceHeight}.");
-
-            args.Add("-ratio");
-            args.Add(ratio.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture));
+            // Allow the window to use the entire available screen area even when the
+            // scale is not an integer. For 640x360 -> 1920x1080 this is exactly 3x.
+            args.Add("-fractional");
         }
         else
         {
+            // Full-screen presentation stays enabled, but the image itself is not
+            // enlarged. IntegerScaler centers it at 1:1 on a black background.
             args.Add("-ratio");
             args.Add("1");
         }
 
-        // This is the option that actually applies IntegerScaler scaling.
-        // Without it the old build only resized the Minecraft window.
-        args.Add("-scale");
-
-        log($"IntegerScaler target process: {processPath}");
-        log($"Minecraft render/client: {sourceWidth}×{sourceHeight}");
-        log($"Windows desktop stays: {desktop.Width}×{desktop.Height}");
-        log($"Requested scaled image area: {requestedTargetW}×{requestedTargetH}");
-        log($"IntegerScaler mode: {(stretchImage ? "scale low-res image" : "1:1 centered")}");
+        log($"IntegerScaler target: {processPath}");
+        log($"IntegerScaler mode: {(stretchImage ? "stretch-to-screen" : "1:1 no stretch")}");
 
         // Make Minecraft the foreground app before IntegerScaler starts. The auto.txt
         // entry then keeps automatic scaling tied to this javaw.exe path.
