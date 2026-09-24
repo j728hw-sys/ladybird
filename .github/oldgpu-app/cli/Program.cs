@@ -34,6 +34,7 @@ internal static class CliProgram
             bool scale = true;
             bool stretch = true;
             bool restoreDisplay = false;
+            bool nativeIntel = false;
 
             for (int i = 1; i < args.Length; i++)
             {
@@ -59,6 +60,9 @@ internal static class CliProgram
                     case "--keep-display-mode":
                         // Compatibility no-op: display mode is never changed anymore.
                         restoreDisplay = false;
+                        break;
+                    case "--native-intel":
+                        nativeIntel = true;
                         break;
                     default:
                         throw new ArgumentException($"Неизвестный параметр: {args[i]}");
@@ -90,10 +94,12 @@ internal static class CliProgram
             Console.WriteLine($"Source: {sw}x{sh}");
             Console.WriteLine(scale ? $"Target: {tw}x{th}" : "Scaling: off");
             Console.WriteLine(scale ? $"Stretch: {(stretch ? "on" : "off (1:1)")}" : "Stretch: off");
-            Console.WriteLine($"llvmpipe threads: {threads}");
+            Console.WriteLine(nativeIntel
+                ? "Renderer: native Intel HD 2000 (experimental, OpenGL 3.1 compatibility agent)"
+                : $"Renderer: Mesa llvmpipe CPU ({threads} threads)");
             Console.WriteLine();
 
-            var cfg = new LaunchConfig(sw, sh, tw, th, threads, scale, stretch, restoreDisplay);
+            var cfg = new LaunchConfig(sw, sh, tw, th, threads, scale, stretch, restoreDisplay, nativeIntel);
             await OldGpuCore.LaunchAsync(cfg, Console.WriteLine);
             return 0;
         }
@@ -127,10 +133,12 @@ Minecraft On OLD GPU CLI
       --no-scale             Не запускать полноэкранный scaler
       --no-stretch           Не растягивать изображение: 1:1 по центру
       --keep-display-mode    Совместимость: теперь режим Windows всегда сохраняется
+      --native-intel         Нативный Intel HD 2000 вместо llvmpipe (экспериментально)
 
 Примеры:
   MinecraftOnOldGPU.CLI.exe launch -s 320x180
   MinecraftOnOldGPU.CLI.exe launch -s 320x180 -t 1280x720 --threads 4
+  MinecraftOnOldGPU.CLI.exe launch -s 640x360 --native-intel
   MinecraftOnOldGPU.CLI.exe restore
 """);
     }
