@@ -134,7 +134,7 @@ internal sealed class MainForm : Form
         card.Controls.Add(grid);
 
         grid.Controls.Add(MakeCaption("Рендер Minecraft — любой W×H"), 0, 0);
-        grid.Controls.Add(MakeCaption("Растянуть до — полный каталог"), 2, 0);
+        grid.Controls.Add(MakeCaption("Растянуть до — без смены режима Windows"), 2, 0);
 
         StyleCombo(_source);
         StyleCombo(_target);
@@ -175,11 +175,12 @@ internal sealed class MainForm : Form
         _stretch.FlatStyle = FlatStyle.Flat;
         _stretch.Margin = new Padding(0, 7, 20, 0);
 
-        _restore.Text = "Вернуть разрешение после выхода";
+        _restore.Text = "Разрешение Windows не изменяется";
         _restore.Checked = true;
         _restore.AutoSize = true;
-        _restore.ForeColor = TextPrimary;
+        _restore.ForeColor = TextMuted;
         _restore.FlatStyle = FlatStyle.Flat;
+        _restore.Enabled = false;
         _restore.Margin = new Padding(0, 7, 28, 0);
 
         var threadLabel = new Label
@@ -327,7 +328,7 @@ internal sealed class MainForm : Form
         Log($"Resolution choices: {_target.Items.Count}");
         Log($"Render presets: {_source.Items.Count}; custom W×H is also accepted");
         Log("Renderer mode: Mesa llvmpipe (CPU only)");
-        Log("Fullscreen scaler: IntegerScaler 2.20 (Windows magnification, no frame capture)");
+        Log("Fullscreen scaler: IntegerScaler 2.20; Windows display mode switching is disabled");
         UpdateScaleUi();
     }
 
@@ -410,7 +411,7 @@ internal sealed class MainForm : Form
         _scale.Enabled = !busy;
         _stretch.Enabled = !busy && _scale.Checked;
         _target.Enabled = !busy && _scale.Checked;
-        _restore.Enabled = !busy && _scale.Checked;
+        _restore.Enabled = false;
     }
 
     private void UpdateScaleUi()
@@ -418,7 +419,7 @@ internal sealed class MainForm : Form
         bool enabled = _scale.Checked;
         _target.Enabled = enabled;
         _stretch.Enabled = enabled;
-        _restore.Enabled = enabled;
+        _restore.Enabled = false;
     }
 
     private void SetStatus(string text) => _status.Text = text;
