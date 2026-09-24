@@ -45,8 +45,75 @@ public final class HD2000NativeAgent {
         new ConcurrentHashMap<Integer, String>();
 
     public static void premain(String agentArgs, Instrumentation inst) {
-        System.err.println(PREFIX + "agent active; waiting for Minecraft 26.3 RenderPearl classes");
+        logLine("agent active; waiting for Minecraft 26.3 RenderPearl classes");
         inst.addTransformer(new Transformer(), false);
+    }
+
+    private static Path logPath() {
+        String configured = System.getenv("OLDGPU_NATIVE_LOG");
+        if (configured != null && !configured.trim().isEmpty()) {
+            return Paths.get(configured);
+        }
+        return Paths.get(System.getProperty("user.dir", "."), "HD2000Native.log");
+    }
+
+    private static synchronized void logLine(String message) {
+        String line = PREFIX + message;
+        System.err.println(line);
+        try {
+            Path path = logPath();
+            Path parent = path.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Files.write(
+                path,
+                (line + System.lineSeparator()).getBytes(StandardCharsets.UTF_8),
+                StandardOpenOption.CREATE,
+                StandardOpenOption.APPEND);
+        } catch (Throwable ignored) {
+            System.err.println(PREFIX + "log write failed: " + ignored);
+        }
+    }
+
+    public static void afterCreateCapabilities(Object caps) {
+        try {
+            ClassLoader loader = Thread.currentThread().getContextClassLoader();
+            Class<?> gl11 = Class.forName("org.lwjgl.opengl.GL11C", true, loader);
+            Method getString = gl11.getMethod("glGetString", int.class);
+            logLine("GL_VERSION=" + getString.invoke(null, 7938));
+            logLine("GL_VENDOR=" + getString.invoke(null, 7936));
+            logLine("GL_RENDERER=" + getString.invoke(null, 7937));
+            logLine("GLSL=" + getString.invoke(null, 35724));
+
+            String[] fields = {
+                "OpenGL30", "OpenGL31", "OpenGL32", "OpenGL33",
+                "GL_ARB_instanced_arrays",
+                "GL_ARB_draw_elements_base_vertex",
+                "GL_ARB_sampler_objects",
+                "GL_ARB_uniform_buffer_object",
+                "GL_ARB_texture_buffer_object",
+                "GL_ARB_framebuffer_object",
+                "GL_ARB_timer_query",
+                "GL_ARB_map_buffer_range",
+                "GL_ARB_copy_buffer",
+                "GL_ARB_seamless_cube_map",
+                "GL_ARB_explicit_attrib_location",
+                "GL_ARB_base_instance",
+                "GL_ARB_draw_indirect",
+                "GL_ARB_multi_draw_indirect",
+                "GL_ARB_shader_draw_parameters"
+            };
+            for (String field : fields) {
+                try {
+                    logLine(field + "=" + caps.getClass().getField(field).getBoolean(caps));
+                } catch (Throwable t) {
+                    logLine(field + "=<unavailable:" + t.getClass().getSimpleName() + ">");
+                }
+            }
+        } catch (Throwable t) {
+            logLine("afterCreateCapabilities failed: " + t);
+        }
     }
 
     public static void main(String[] args) throws Exception {
@@ -62,6 +129,8 @@ public final class HD2000NativeAgent {
             Transformer.GL_DEVICE,
             Transformer.GL_RECOMPILER,
             Transformer.GL_PROGRAM,
+            Transformer.GL_SAMPLER,
+            Transformer.GL_COMMAND_ENCODER,
             Transformer.GL_TRANSIENT_FALLBACK,
             Transformer.VERTEX_ARRAY_EMULATED
         };
@@ -157,20 +226,19 @@ public final class HD2000NativeAgent {
 
     private static void writeShaderFailure(int shaderId, String info, String source) {
         try {
-            Path dir = Paths.get(System.getProperty("java.io.tmpdir"), "MinecraftOnOldGPU");
-            Files.createDirectories(dir);
-            Path log = dir.resolve("HD2000Native-shader-errors.log");
-            String text = "\r\n===== shader " + shaderId + " =====\r\n"
-                + "COMPILE ERROR:\r\n" + info + "\r\n"
-                + "GENERATED GLSL:\r\n" + (source == null ? "<missing>" : source)
-                + "\r\n===== end shader " + shaderId + " =====\r\n";
+            Path log = logPath();
+            String text = System.lineSeparator()
+                + "===== shader " + shaderId + " =====" + System.lineSeparator()
+                + "COMPILE ERROR:" + System.lineSeparator() + info + System.lineSeparator()
+                + "GENERATED GLSL:" + System.lineSeparator()
+                + (source == null ? "<missing>" : source) + System.lineSeparator()
+                + "===== end shader " + shaderId + " =====" + System.lineSeparator();
             Files.write(
                 log,
                 text.getBytes(StandardCharsets.UTF_8),
                 StandardOpenOption.CREATE,
                 StandardOpenOption.APPEND);
-            System.err.println(PREFIX + "shader " + shaderId
-                + " failed; diagnostics: " + log.toAbsolutePath());
+            logLine("shader " + shaderId + " failed; diagnostics appended");
         } catch (Throwable ignored) {
             System.err.println(PREFIX + "unable to write shader diagnostics: " + ignored);
         }
@@ -206,7 +274,13 @@ public final class HD2000NativeAgent {
             Class<?> state = Class.forName(
                 "com.mojang.renderpearl.backend.opengl.GlStateManager", true, loader);
             Method link = state.getMethod("glLinkProgram", int.class);
+            Method status = state.getMethod("glGetProgrami", int.class, int.class);
+            Method info = state.getMethod("glGetProgramInfoLog", int.class, int.class);
             link.invoke(null, programId);
+            int ok = ((Integer) status.invoke(null, programId, 35714)).intValue();
+            String msg = String.valueOf(info.invoke(null, programId, 32768));
+            logLine("program " + programId + " linkStatus=" + ok
+                + (msg.isEmpty() ? "" : " log=" + msg.replace('\n', ' ')));
         } catch (Throwable t) {
             throw new RuntimeException("HD2000 legacy program link failed", t);
         }
@@ -302,6 +376,33 @@ public final class HD2000NativeAgent {
         return rem == 0L ? value : value + alignment - rem;
     }
 
+    public static void drawArraysInstancedBaseInstanceCompat(
+            int mode, int first, int count, int instanceCount, int firstInstance) {
+        try {
+            Class<?> cls = Class.forName("org.lwjgl.opengl.ARBDrawInstanced");
+            Method m = cls.getMethod(
+                "glDrawArraysInstancedARB",
+                int.class, int.class, int.class, int.class);
+            m.invoke(null, mode, first, count, instanceCount);
+        } catch (Throwable t) {
+            throw new RuntimeException("HD2000 drawArraysInstanced fallback failed", t);
+        }
+    }
+
+    public static void drawElementsInstancedBaseVertexBaseInstanceCompat(
+            int mode, int count, int type, long indices,
+            int instanceCount, int baseVertex, int firstInstance) {
+        try {
+            Class<?> cls = Class.forName("org.lwjgl.opengl.ARBDrawElementsBaseVertex");
+            Method m = cls.getMethod(
+                "glDrawElementsInstancedBaseVertex",
+                int.class, int.class, int.class, long.class, int.class, int.class);
+            m.invoke(null, mode, count, type, indices, instanceCount, baseVertex);
+        } catch (Throwable t) {
+            throw new RuntimeException("HD2000 drawElementsInstanced fallback failed", t);
+        }
+    }
+
     private static boolean invokeSdlGetAttribute(int attr, IntBuffer value) {
         try {
             Class<?> sdlVideo = Class.forName("org.lwjgl.sdl.SDLVideo");
@@ -319,6 +420,8 @@ public final class HD2000NativeAgent {
         static final String GL_DEVICE = "com/mojang/renderpearl/backend/opengl/GlDevice";
         static final String GL_RECOMPILER = "com/mojang/renderpearl/backend/opengl/GlPipelineRecompiler";
         static final String GL_PROGRAM = "com/mojang/renderpearl/backend/opengl/GlProgram";
+        static final String GL_SAMPLER = "com/mojang/renderpearl/backend/opengl/GlSampler";
+        static final String GL_COMMAND_ENCODER = "com/mojang/renderpearl/backend/opengl/GlCommandEncoder";
         static final String GL_TRANSIENT_FALLBACK = "com/mojang/renderpearl/backend/opengl/GlTransientMemory$Fallback";
         static final String VERTEX_ARRAY_EMULATED = "com/mojang/renderpearl/backend/opengl/VertexArray$Emulated";
 
@@ -346,6 +449,12 @@ public final class HD2000NativeAgent {
                 if (GL_PROGRAM.equals(className)) {
                     return patchGlProgram(classfileBuffer);
                 }
+                if (GL_SAMPLER.equals(className)) {
+                    return patchGlSampler(classfileBuffer);
+                }
+                if (GL_COMMAND_ENCODER.equals(className)) {
+                    return patchGlCommandEncoder(classfileBuffer);
+                }
                 if (GL_TRANSIENT_FALLBACK.equals(className)) {
                     return patchTransientFallback(classfileBuffer);
                 }
@@ -353,7 +462,7 @@ public final class HD2000NativeAgent {
                     return patchVertexArrayEmulated(classfileBuffer);
                 }
             } catch (Throwable t) {
-                System.err.println(PREFIX + "failed to patch " + className + ": " + t);
+                logLine("failed to patch " + className + ": " + t);
                 t.printStackTrace(System.err);
             }
             return null;
@@ -402,7 +511,7 @@ public final class HD2000NativeAgent {
             if (changed < 3) {
                 throw new IllegalStateException("Expected at least 3 GlBackend context patches, got " + changed);
             }
-            System.err.println(PREFIX + "GlBackend: " + changed + " context attributes patched for OpenGL 3.1");
+            logLine("GlBackend: " + changed + " context attributes patched for OpenGL 3.1");
             return write(cn);
         }
 
@@ -431,7 +540,33 @@ public final class HD2000NativeAgent {
             if (changed < 2) {
                 throw new IllegalStateException("Expected 2 GlDevice SDL version reads, got " + changed);
             }
-            System.err.println(PREFIX + "GlDevice: " + changed + " version checks bridged; real GL capabilities stay untouched");
+            int capHooks = 0;
+            for (MethodNode method : cn.methods) {
+                for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+                    if (insn instanceof MethodInsnNode) {
+                        MethodInsnNode call = (MethodInsnNode) insn;
+                        if ("org/lwjgl/opengl/GL".equals(call.owner)
+                                && "createCapabilities".equals(call.name)
+                                && "()Lorg/lwjgl/opengl/GLCapabilities;".equals(call.desc)) {
+                            org.objectweb.asm.tree.InsnList hook = new org.objectweb.asm.tree.InsnList();
+                            hook.add(new InsnNode(Opcodes.DUP));
+                            hook.add(new MethodInsnNode(
+                                Opcodes.INVOKESTATIC,
+                                "oldgpu/nativeintel/HD2000NativeAgent",
+                                "afterCreateCapabilities",
+                                "(Ljava/lang/Object;)V",
+                                false));
+                            method.instructions.insert(insn, hook);
+                            capHooks++;
+                        }
+                    }
+                }
+            }
+            if (capHooks < 1) {
+                throw new IllegalStateException("GL.createCapabilities hook not found");
+            }
+            logLine("GlDevice: " + changed
+                + " version checks bridged; capabilities hook=" + capHooks);
             return write(cn);
         }
 
@@ -485,7 +620,7 @@ public final class HD2000NativeAgent {
             if (diagnostics < 2) {
                 throw new IllegalStateException("Shader diagnostic hooks were not found");
             }
-            System.err.println(PREFIX + "GlPipelineRecompiler: " + changed
+            logLine("GlPipelineRecompiler: " + changed
                 + " GLSL target(s) changed 330 -> 140; diagnostics hooks=" + diagnostics);
             return write(cn);
         }
@@ -513,11 +648,111 @@ public final class HD2000NativeAgent {
                 }
             }
 
+            int gl31Redirects = 0;
+            for (MethodNode method : cn.methods) {
+                for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+                    if (!(insn instanceof MethodInsnNode)) continue;
+                    MethodInsnNode call = (MethodInsnNode) insn;
+                    if ("org/lwjgl/opengl/GL33C".equals(call.owner)
+                            && ("glGetUniformBlockIndex".equals(call.name)
+                                || "glUniformBlockBinding".equals(call.name))) {
+                        call.owner = "org/lwjgl/opengl/GL31C";
+                        gl31Redirects++;
+                    }
+                }
+            }
             if (changed < 1) {
                 throw new IllegalStateException("GlProgram.glLinkProgram call was not found");
             }
-            System.err.println(PREFIX + "GlProgram: " + changed
-                + " link call(s) patched to bind legacy attrib/fragment locations");
+            logLine("GlProgram: link hooks=" + changed
+                + ", GL31 uniform redirects=" + gl31Redirects);
+            return write(cn);
+        }
+
+        private byte[] patchGlSampler(byte[] bytes) {
+            ClassNode cn = read(bytes);
+            int changed = 0;
+            for (MethodNode method : cn.methods) {
+                for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+                    if (!(insn instanceof MethodInsnNode)) continue;
+                    MethodInsnNode call = (MethodInsnNode) insn;
+                    if ("org/lwjgl/opengl/GL33C".equals(call.owner)
+                            && ("glGenSamplers".equals(call.name)
+                                || "glDeleteSamplers".equals(call.name)
+                                || "glSamplerParameteri".equals(call.name)
+                                || "glSamplerParameterf".equals(call.name))) {
+                        call.owner = "org/lwjgl/opengl/ARBSamplerObjects";
+                        changed++;
+                    }
+                }
+            }
+            if (changed < 1) {
+                throw new IllegalStateException("No sampler calls found in GlSampler");
+            }
+            logLine("GlSampler: redirected " + changed + " calls through ARB_sampler_objects");
+            return write(cn);
+        }
+
+        private byte[] patchGlCommandEncoder(byte[] bytes) {
+            ClassNode cn = read(bytes);
+            int changed = 0;
+
+            for (MethodNode method : cn.methods) {
+                for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+                    if (!(insn instanceof MethodInsnNode)) continue;
+                    MethodInsnNode call = (MethodInsnNode) insn;
+
+                    if ("org/lwjgl/opengl/GL33C".equals(call.owner)
+                            && "glDrawArraysInstanced".equals(call.name)
+                            && "(IIII)V".equals(call.desc)) {
+                        call.owner = "org/lwjgl/opengl/ARBDrawInstanced";
+                        call.name = "glDrawArraysInstancedARB";
+                        changed++;
+                    } else if ("org/lwjgl/opengl/GL33C".equals(call.owner)
+                            && "glDrawElementsInstancedBaseVertex".equals(call.name)
+                            && "(IIIJII)V".equals(call.desc)) {
+                        call.owner = "org/lwjgl/opengl/ARBDrawElementsBaseVertex";
+                        changed++;
+                    } else if ("org/lwjgl/opengl/GL33C".equals(call.owner)
+                            && "nglMultiDrawElementsBaseVertex".equals(call.name)) {
+                        call.owner = "org/lwjgl/opengl/ARBDrawElementsBaseVertex";
+                        changed++;
+                    } else if ("org/lwjgl/opengl/GL33C".equals(call.owner)
+                            && "glBindSampler".equals(call.name)
+                            && "(II)V".equals(call.desc)) {
+                        call.owner = "org/lwjgl/opengl/ARBSamplerObjects";
+                        changed++;
+                    } else if ("org/lwjgl/opengl/GL33C".equals(call.owner)
+                            && "glTexBuffer".equals(call.name)
+                            && "(III)V".equals(call.desc)) {
+                        call.owner = "org/lwjgl/opengl/GL31C";
+                        changed++;
+                    } else if ("org/lwjgl/opengl/GL33C".equals(call.owner)
+                            && "glBindBufferRange".equals(call.name)
+                            && "(IIIJJ)V".equals(call.desc)) {
+                        call.owner = "org/lwjgl/opengl/GL30C";
+                        changed++;
+                    } else if ("org/lwjgl/opengl/ARBBaseInstance".equals(call.owner)
+                            && "glDrawArraysInstancedBaseInstance".equals(call.name)
+                            && "(IIIII)V".equals(call.desc)) {
+                        call.owner = "oldgpu/nativeintel/HD2000NativeAgent";
+                        call.name = "drawArraysInstancedBaseInstanceCompat";
+                        changed++;
+                    } else if ("org/lwjgl/opengl/ARBBaseInstance".equals(call.owner)
+                            && "glDrawElementsInstancedBaseVertexBaseInstance".equals(call.name)
+                            && "(IIIJIII)V".equals(call.desc)) {
+                        call.owner = "oldgpu/nativeintel/HD2000NativeAgent";
+                        call.name = "drawElementsInstancedBaseVertexBaseInstanceCompat";
+                        changed++;
+                    }
+                }
+            }
+
+            if (changed < 6) {
+                throw new IllegalStateException(
+                    "Expected legacy draw/uniform/sampler redirects in GlCommandEncoder, got " + changed);
+            }
+            logLine("GlCommandEncoder: legacy entry-point redirects=" + changed);
             return write(cn);
         }
 
@@ -574,7 +809,7 @@ public final class HD2000NativeAgent {
             if (changed < 2) {
                 throw new IllegalStateException("Expected 2 transient upload methods, got " + changed);
             }
-            System.err.println(PREFIX + "GlTransientMemory.Fallback: mapped uploads disabled for Sandy Bridge");
+            logLine("GlTransientMemory.Fallback: mapped uploads disabled for Sandy Bridge");
             return write(cn);
         }
 
@@ -605,7 +840,7 @@ public final class HD2000NativeAgent {
             if (changed < 1) {
                 throw new IllegalStateException("glVertexAttribDivisor call was not found in VertexArray.Emulated");
             }
-            System.err.println(PREFIX + "VertexArray.Emulated: " + changed + " instancing call(s) redirected to ARB");
+            logLine("VertexArray.Emulated: " + changed + " instancing call(s) redirected to ARB");
             return write(cn);
         }
 
@@ -617,7 +852,7 @@ public final class HD2000NativeAgent {
         }
 
         private static byte[] write(ClassNode node) {
-            ClassWriter writer = new ClassWriter(0);
+            ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
             node.accept(writer);
             return writer.toByteArray();
         }
