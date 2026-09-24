@@ -24,6 +24,27 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
+      - name: Setup Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "25"
+          cache: "maven"
+
+      - name: Build HD 2000 native compatibility agent
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          mvn -B -f .github/oldgpu-app/native-agent/pom.xml -DskipTests package
+          if ($LASTEXITCODE -ne 0) { throw "Native agent Maven build failed" }
+          $agent = ".github/oldgpu-app/native-agent/target/HD2000NativeAgent.jar"
+          if (-not (Test-Path $agent)) { throw "HD2000NativeAgent.jar missing" }
+          $listing = & jar tf $agent
+          if ($LASTEXITCODE -ne 0) { throw "Unable to inspect native agent jar" }
+          if ($listing -notcontains "oldgpu/nativeintel/HD2000NativeAgent.class") { throw "Native agent class missing from jar" }
+          if (-not ($listing | Where-Object { $_ -eq "org/objectweb/asm/ClassReader.class" })) { throw "ASM was not shaded into native agent" }
+          Write-Host "Native agent built successfully"
+
       - name: Publish GUI
         shell: pwsh
         run: |
@@ -75,10 +96,13 @@ jobs:
           New-Item -ItemType Directory -Force $root | Out-Null
           New-Item -ItemType Directory -Force "$root/runtime/mesa" | Out-Null
           New-Item -ItemType Directory -Force "$root/runtime/integer-scaler" | Out-Null
+          New-Item -ItemType Directory -Force "$root/runtime/native-intel" | Out-Null
           Copy-Item out/gui/MinecraftOnOldGPU.exe "$root/MinecraftOnOldGPU.exe" -Force
           Copy-Item out/cli/MinecraftOnOldGPU.CLI.exe "$root/MinecraftOnOldGPU.CLI.exe" -Force
           Copy-Item .github/oldgpu-app/README_RU.txt "$root/README_RU.txt" -Force
           Copy-Item .github/oldgpu-app/THIRD_PARTY.txt "$root/THIRD_PARTY.txt" -Force
+          Copy-Item .github/oldgpu-app/native-agent/target/HD2000NativeAgent.jar "$root/runtime/native-intel/HD2000NativeAgent.jar" -Force
+          if (-not (Test-Path "$root/runtime/native-intel/HD2000NativeAgent.jar")) { throw "Native Intel agent absent" }
           $mesaDir = (Get-Content mesa-x64-path.txt -Raw).Trim()
           foreach ($name in @("opengl32.dll","opengl32sw.dll","libgallium_wgl.dll","libglapi.dll")) {
             $src = Join-Path $mesaDir $name
@@ -124,6 +148,13 @@ jobs:
             Pop-Location
           }
           Remove-Item "package/Minecraft On OLD GPU/runtime/mesa/verify-cpu.exe" -Force
+
+      - name: Smoke test native agent
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & java "-javaagent:package/Minecraft On OLD GPU/runtime/native-intel/HD2000NativeAgent.jar" -version
+          if ($LASTEXITCODE -ne 0) { throw "Native agent smoke test failed" }
 
       - name: Smoke test CLI
         shell: pwsh
