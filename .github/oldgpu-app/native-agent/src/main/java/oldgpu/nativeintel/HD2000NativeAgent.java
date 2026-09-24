@@ -6,6 +6,7 @@ import java.lang.instrument.Instrumentation;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.lang.reflect.Method;
+import java.util.Locale;
 import java.nio.IntBuffer;
 import java.security.ProtectionDomain;
 import java.util.jar.JarEntry;
@@ -49,6 +50,7 @@ public final class HD2000NativeAgent {
             Transformer.GL_BACKEND,
             Transformer.GL_DEVICE,
             Transformer.GL_RECOMPILER,
+            Transformer.GL_PROGRAM,
             Transformer.VERTEX_ARRAY_EMULATED
         };
 
@@ -106,6 +108,42 @@ public final class HD2000NativeAgent {
         return ok;
     }
 
+    /**
+     * GLSL < 330 loses layout(location=...) in SPIRV-Cross. RenderPearl normally
+     * relies on those qualifiers, so bind the names it already generated to the
+     * original SPIR-V locations before linking.
+     */
+    public static void linkLegacyProgram(int programId) {
+        try {
+            ClassLoader loader = Thread.currentThread().getContextClassLoader();
+            Class<?> gl20 = Class.forName("org.lwjgl.opengl.GL20C", true, loader);
+            Class<?> gl30 = Class.forName("org.lwjgl.opengl.GL30C", true, loader);
+
+            Method bindAttrib = gl20.getMethod(
+                "glBindAttribLocation", int.class, int.class, CharSequence.class);
+            Method bindFrag = gl30.getMethod(
+                "glBindFragDataLocation", int.class, int.class, CharSequence.class);
+
+            // RenderPearl's GlPipelineRecompiler renames these using the SPIR-V
+            // location. Binding non-existing names is harmless per OpenGL.
+            for (int location = 0; location < 16; location++) {
+                bindAttrib.invoke(null, programId, location,
+                    String.format(Locale.ROOT, "_vert_input_%02d", location));
+            }
+            for (int location = 0; location < 8; location++) {
+                bindFrag.invoke(null, programId, location,
+                    String.format(Locale.ROOT, "_frag_output_%02d", location));
+            }
+
+            Class<?> state = Class.forName(
+                "com.mojang.renderpearl.backend.opengl.GlStateManager", true, loader);
+            Method link = state.getMethod("glLinkProgram", int.class);
+            link.invoke(null, programId);
+        } catch (Throwable t) {
+            throw new RuntimeException("HD2000 legacy program link failed", t);
+        }
+    }
+
     private static boolean invokeSdlGetAttribute(int attr, IntBuffer value) {
         try {
             Class<?> sdlVideo = Class.forName("org.lwjgl.sdl.SDLVideo");
@@ -122,6 +160,7 @@ public final class HD2000NativeAgent {
         static final String GL_BACKEND = "com/mojang/renderpearl/backend/opengl/GlBackend";
         static final String GL_DEVICE = "com/mojang/renderpearl/backend/opengl/GlDevice";
         static final String GL_RECOMPILER = "com/mojang/renderpearl/backend/opengl/GlPipelineRecompiler";
+        static final String GL_PROGRAM = "com/mojang/renderpearl/backend/opengl/GlProgram";
         static final String VERTEX_ARRAY_EMULATED = "com/mojang/renderpearl/backend/opengl/VertexArray$Emulated";
 
         @Override
@@ -144,6 +183,9 @@ public final class HD2000NativeAgent {
                 }
                 if (GL_RECOMPILER.equals(className)) {
                     return patchGlPipelineRecompiler(classfileBuffer);
+                }
+                if (GL_PROGRAM.equals(className)) {
+                    return patchGlProgram(classfileBuffer);
                 }
                 if (VERTEX_ARRAY_EMULATED.equals(className)) {
                     return patchVertexArrayEmulated(classfileBuffer);
@@ -263,6 +305,37 @@ public final class HD2000NativeAgent {
                 throw new IllegalStateException("GLSL 330 target was not found in GlPipelineRecompiler");
             }
             System.err.println(PREFIX + "GlPipelineRecompiler: " + changed + " GLSL target(s) changed 330 -> 140");
+            return write(cn);
+        }
+
+        private byte[] patchGlProgram(byte[] bytes) {
+            ClassNode cn = read(bytes);
+            int changed = 0;
+
+            for (MethodNode method : cn.methods) {
+                for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+                    if (!(insn instanceof MethodInsnNode)) {
+                        continue;
+                    }
+                    MethodInsnNode call = (MethodInsnNode) insn;
+                    if ("com/mojang/renderpearl/backend/opengl/GlStateManager".equals(call.owner)
+                            && "glLinkProgram".equals(call.name)
+                            && "(I)V".equals(call.desc)) {
+                        // The program ID is already on the operand stack.
+                        call.owner = "oldgpu/nativeintel/HD2000NativeAgent";
+                        call.name = "linkLegacyProgram";
+                        call.itf = false;
+                        call.setOpcode(Opcodes.INVOKESTATIC);
+                        changed++;
+                    }
+                }
+            }
+
+            if (changed < 1) {
+                throw new IllegalStateException("GlProgram.glLinkProgram call was not found");
+            }
+            System.err.println(PREFIX + "GlProgram: " + changed
+                + " link call(s) patched to bind legacy attrib/fragment locations");
             return write(cn);
         }
 
