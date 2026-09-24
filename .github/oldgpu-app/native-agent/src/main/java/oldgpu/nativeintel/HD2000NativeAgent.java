@@ -51,6 +51,7 @@ public final class HD2000NativeAgent {
             Transformer.GL_DEVICE,
             Transformer.GL_RECOMPILER,
             Transformer.GL_PROGRAM,
+            Transformer.GL_TRANSIENT_FALLBACK,
             Transformer.VERTEX_ARRAY_EMULATED
         };
 
@@ -144,6 +145,93 @@ public final class HD2000NativeAgent {
         }
     }
 
+    /**
+     * Intel Sandy Bridge 9.17.10.4459 is known to be unreliable with mapped
+     * buffers. Upload transient data through glBufferSubData instead.
+     */
+    public static Object uploadGpuNoMap(
+            Object transientMemory,
+            List<?> data,
+            long alignment,
+            int usage,
+            long minimumAllocation,
+            long elementSize) {
+        try {
+            long totalSize = 0L;
+            for (Object item : data) {
+                ByteBuffer buffer = ((ByteBuffer) item).duplicate();
+                totalSize += buffer.remaining();
+                totalSize = alignUp(totalSize, alignment);
+            }
+            if (totalSize > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("Transient upload exceeds 2GB");
+            }
+
+            Method allocateGpu = transientMemory.getClass().getMethod(
+                "allocateGpu", long.class, long.class, int.class, long.class, long.class);
+            Object slice = allocateGpu.invoke(
+                transientMemory, totalSize, alignment, usage, minimumAllocation, elementSize);
+
+            ByteBuffer packed = ByteBuffer.allocateDirect((int) totalSize);
+            for (Object item : data) {
+                ByteBuffer src = ((ByteBuffer) item).duplicate();
+                packed.put(src);
+                int aligned = (int) alignUp(packed.position(), alignment);
+                while (packed.position() < aligned) {
+                    packed.put((byte) 0);
+                }
+            }
+            packed.flip();
+
+            Method bufferMethod = slice.getClass().getMethod("buffer");
+            Method offsetMethod = slice.getClass().getMethod("offset");
+            Object glBuffer = bufferMethod.invoke(slice);
+            long offset = ((Long) offsetMethod.invoke(slice)).longValue();
+            Method handleMethod = glBuffer.getClass().getMethod("handle");
+            int handle = ((Integer) handleMethod.invoke(glBuffer)).intValue();
+
+            Class<?> c = transientMemory.getClass();
+            while (c != null && c.getDeclaredFields().length >= 0) {
+                try {
+                    java.lang.reflect.Field dsaField = c.getDeclaredField("dsa");
+                    dsaField.setAccessible(true);
+                    Object dsa = dsaField.get(transientMemory);
+                    Method subData = dsa.getClass().getMethod(
+                        "bufferSubData", int.class, long.class, ByteBuffer.class, int.class);
+                    subData.invoke(dsa, handle, offset, packed, usage);
+                    return slice;
+                } catch (NoSuchFieldException ignored) {
+                    c = c.getSuperclass();
+                }
+            }
+            throw new NoSuchFieldException("GlTransientMemory.dsa");
+        } catch (Throwable t) {
+            throw new RuntimeException("HD2000 no-map transient upload failed", t);
+        }
+    }
+
+    public static List<Object> multiUploadGpuNoMap(
+            Object transientMemory, List<?> data, long alignment, int usage) {
+        List<Object> result = new ArrayList<Object>(data.size());
+        for (Object item : data) {
+            ByteBuffer src = ((ByteBuffer) item).duplicate();
+            long size = src.remaining();
+            List<ByteBuffer> one = new ArrayList<ByteBuffer>(1);
+            one.add(src);
+            result.add(uploadGpuNoMap(
+                transientMemory, one, alignment, usage, size, Math.max(1L, size)));
+        }
+        return result;
+    }
+
+    private static long alignUp(long value, long alignment) {
+        if (alignment <= 1L) {
+            return value;
+        }
+        long rem = value % alignment;
+        return rem == 0L ? value : value + alignment - rem;
+    }
+
     private static boolean invokeSdlGetAttribute(int attr, IntBuffer value) {
         try {
             Class<?> sdlVideo = Class.forName("org.lwjgl.sdl.SDLVideo");
@@ -161,6 +249,7 @@ public final class HD2000NativeAgent {
         static final String GL_DEVICE = "com/mojang/renderpearl/backend/opengl/GlDevice";
         static final String GL_RECOMPILER = "com/mojang/renderpearl/backend/opengl/GlPipelineRecompiler";
         static final String GL_PROGRAM = "com/mojang/renderpearl/backend/opengl/GlProgram";
+        static final String GL_TRANSIENT_FALLBACK = "com/mojang/renderpearl/backend/opengl/GlTransientMemory$Fallback";
         static final String VERTEX_ARRAY_EMULATED = "com/mojang/renderpearl/backend/opengl/VertexArray$Emulated";
 
         @Override
@@ -186,6 +275,9 @@ public final class HD2000NativeAgent {
                 }
                 if (GL_PROGRAM.equals(className)) {
                     return patchGlProgram(classfileBuffer);
+                }
+                if (GL_TRANSIENT_FALLBACK.equals(className)) {
+                    return patchTransientFallback(classfileBuffer);
                 }
                 if (VERTEX_ARRAY_EMULATED.equals(className)) {
                     return patchVertexArrayEmulated(classfileBuffer);
@@ -336,6 +428,63 @@ public final class HD2000NativeAgent {
             }
             System.err.println(PREFIX + "GlProgram: " + changed
                 + " link call(s) patched to bind legacy attrib/fragment locations");
+            return write(cn);
+        }
+
+        private byte[] patchTransientFallback(byte[] bytes) {
+            ClassNode cn = read(bytes);
+            int changed = 0;
+
+            for (MethodNode method : cn.methods) {
+                if ("uploadGpu".equals(method.name)
+                        && "(Ljava/util/List;JIJJ)Lcom/mojang/renderpearl/api/buffers/GpuBufferSlice;".equals(method.desc)) {
+                    method.instructions.clear();
+                    method.tryCatchBlocks.clear();
+                    method.localVariables = null;
+                    method.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.ALOAD, 0));
+                    method.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.ALOAD, 1));
+                    method.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.LLOAD, 2));
+                    method.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.ILOAD, 4));
+                    method.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.LLOAD, 5));
+                    method.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.LLOAD, 7));
+                    method.instructions.add(new MethodInsnNode(
+                        Opcodes.INVOKESTATIC,
+                        "oldgpu/nativeintel/HD2000NativeAgent",
+                        "uploadGpuNoMap",
+                        "(Ljava/lang/Object;Ljava/util/List;JIJJ)Ljava/lang/Object;",
+                        false));
+                    method.instructions.add(new org.objectweb.asm.tree.TypeInsnNode(
+                        Opcodes.CHECKCAST, "com/mojang/renderpearl/api/buffers/GpuBufferSlice"));
+                    method.instructions.add(new InsnNode(Opcodes.ARETURN));
+                    method.maxStack = 9;
+                    method.maxLocals = 9;
+                    changed++;
+                } else if ("multiUploadGpu".equals(method.name)
+                        && "(Ljava/util/List;JI)Ljava/util/List;".equals(method.desc)) {
+                    method.instructions.clear();
+                    method.tryCatchBlocks.clear();
+                    method.localVariables = null;
+                    method.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.ALOAD, 0));
+                    method.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.ALOAD, 1));
+                    method.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.LLOAD, 2));
+                    method.instructions.add(new org.objectweb.asm.tree.VarInsnNode(Opcodes.ILOAD, 4));
+                    method.instructions.add(new MethodInsnNode(
+                        Opcodes.INVOKESTATIC,
+                        "oldgpu/nativeintel/HD2000NativeAgent",
+                        "multiUploadGpuNoMap",
+                        "(Ljava/lang/Object;Ljava/util/List;JI)Ljava/util/List;",
+                        false));
+                    method.instructions.add(new InsnNode(Opcodes.ARETURN));
+                    method.maxStack = 5;
+                    method.maxLocals = 5;
+                    changed++;
+                }
+            }
+
+            if (changed < 2) {
+                throw new IllegalStateException("Expected 2 transient upload methods, got " + changed);
+            }
+            System.err.println(PREFIX + "GlTransientMemory.Fallback: mapped uploads disabled for Sandy Bridge");
             return write(cn);
         }
 
