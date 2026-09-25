@@ -269,6 +269,20 @@ public static class OldGpuCore
                 psi.Environment["OLDGPU_NATIVE_LOG"] = NativeIntelLogPath;
 
                 string agentOption = $"-javaagent:\"{NativeIntelAgentJar}\"";
+
+                // IMPORTANT: Legacy Launcher has its own supported --javaargs option.
+                // Passing only _JAVA_OPTIONS is not reliable: the bootstrap/game
+                // process chain may sanitize or rebuild the environment. The "--"
+                // separator forwards the following arguments from Bootstrap to
+                // the actual Launcher, and --javaargs is then appended to the
+                // Minecraft JVM command itself.
+                psi.ArgumentList.Add("--");
+                psi.ArgumentList.Add("--javaargs");
+                psi.ArgumentList.Add(agentOption);
+
+                // Keep the environment hook only as a secondary fallback for
+                // launcher versions that preserve it. The supported --javaargs
+                // path above is the authoritative injection mechanism.
                 string? existingJavaOptions = psi.Environment.TryGetValue("_JAVA_OPTIONS", out var javaOptions)
                     ? javaOptions
                     : null;
@@ -277,6 +291,7 @@ public static class OldGpuCore
                     : existingJavaOptions + " " + agentOption;
 
                 log("Запускаю Legacy Launcher: НАТИВНЫЙ Intel HD 2000 / OpenGL 3.1 compatibility agent.");
+                log("Java-agent передаётся через официальный Legacy Launcher --javaargs.");
                 log("CPU llvmpipe в этом режиме не используется.");
                 log($"Native log: {NativeIntelLogPath}");
             }
@@ -299,6 +314,45 @@ public static class OldGpuCore
             IntPtr hwnd = await WaitForMinecraftWindowAsync(TimeSpan.FromMinutes(4), log, ct);
 
             log($"Нашёл Minecraft. Фиксирую клиентскую область {cfg.SourceWidth}×{cfg.SourceHeight}...");
+
+            if (cfg.NativeIntelGpu)
+            {
+                await Task.Delay(1200, ct);
+                bool agentLoaded = false;
+                try
+                {
+                    if (File.Exists(NativeIntelLogPath))
+                    {
+                        string nativeLog = File.ReadAllText(NativeIntelLogPath, Encoding.UTF8);
+                        agentLoaded = nativeLog.Contains(
+                            "[HD2000 Native] agent active",
+                            StringComparison.Ordinal);
+                    }
+                }
+                catch
+                {
+                    // The agent may have the file open for appending; this is only
+                    // a diagnostic check and must never break a working launch.
+                }
+
+                if (agentLoaded)
+                {
+                    log("HD2000NativeAgent подтверждён внутри JVM Minecraft.");
+                }
+                else
+                {
+                    log("ОШИБКА: окно Minecraft появилось, но HD2000NativeAgent не подтвердил загрузку в игровой JVM.");
+                    try
+                    {
+                        File.AppendAllText(
+                            NativeIntelLogPath,
+                            "[Launcher] ERROR: Minecraft window appeared but javaagent premain was not observed." +
+                            Environment.NewLine,
+                            new UTF8Encoding(false));
+                    }
+                    catch { }
+                }
+            }
 
             // Minecraft/GLFW may update its window once during startup. Re-apply a few times.
             for (int i = 0; i < 3; i++)
