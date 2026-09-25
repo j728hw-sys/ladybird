@@ -280,16 +280,8 @@ public static class OldGpuCore
                 psi.ArgumentList.Add("--javaargs");
                 psi.ArgumentList.Add(agentOption);
 
-                // Keep the environment hook only as a secondary fallback for
-                // launcher versions that preserve it. The supported --javaargs
-                // path above is the authoritative injection mechanism.
-                string? existingJavaOptions = psi.Environment.TryGetValue("_JAVA_OPTIONS", out var javaOptions)
-                    ? javaOptions
-                    : null;
-                psi.Environment["_JAVA_OPTIONS"] = string.IsNullOrWhiteSpace(existingJavaOptions)
-                    ? agentOption
-                    : existingJavaOptions + " " + agentOption;
-
+                // Do not duplicate the agent through _JAVA_OPTIONS. If both
+                // mechanisms reach the game JVM, premain would run twice.
                 log("Запускаю Legacy Launcher: НАТИВНЫЙ Intel HD 2000 / OpenGL 3.1 compatibility agent.");
                 log("Java-agent передаётся через официальный Legacy Launcher --javaargs.");
                 log("CPU llvmpipe в этом режиме не используется.");
