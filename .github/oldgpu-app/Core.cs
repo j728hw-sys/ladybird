@@ -33,6 +33,8 @@ public static class OldGpuCore
     public static string IntegerScalerExe => Path.Combine(IntegerScalerDir, "IntegerScaler_64bit.exe");
     public static string NativeIntelAgentJar => Path.Combine(
         AppDir, "runtime", "native-intel", "HD2000NativeAgent.jar");
+    public static string NativeIntelInjectedAgentJar => Path.Combine(
+        LauncherRoot, "oldgpu-native", "HD2000NativeAgent.jar");
     public static string NativeIntelLogPath => Path.Combine(AppDir, "HD2000Native.log");
 
     private static readonly string[] ManagedFiles =
@@ -268,14 +270,20 @@ public static class OldGpuCore
 
                 psi.Environment["OLDGPU_NATIVE_LOG"] = NativeIntelLogPath;
 
-                string agentOption = $"-javaagent:\"{NativeIntelAgentJar}\"";
+                // Legacy Launcher's JavaProcessLauncher.addSplitCommands() literally
+                // does split(" ") and passes tokens directly to ProcessBuilder.
+                // Quotes are NOT shell-unquoted there, so -javaagent:"C:\\..." is
+                // broken. Copy the agent to a simple launcher-owned path and pass a
+                // raw unquoted token.
+                Directory.CreateDirectory(Path.GetDirectoryName(NativeIntelInjectedAgentJar)!);
+                File.Copy(NativeIntelAgentJar, NativeIntelInjectedAgentJar, true);
 
-                // IMPORTANT: Legacy Launcher has its own supported --javaargs option.
-                // Passing only _JAVA_OPTIONS is not reliable: the bootstrap/game
-                // process chain may sanitize or rebuild the environment. The "--"
-                // separator forwards the following arguments from Bootstrap to
-                // the actual Launcher, and --javaargs is then appended to the
-                // Minecraft JVM command itself.
+                string agentOption = "-javaagent:" + NativeIntelInjectedAgentJar;
+                if (agentOption.Contains(' '))
+                    throw new InvalidOperationException(
+                        "Путь к Legacy Launcher содержит пробелы; javaagent нельзя безопасно передать через --javaargs: " +
+                        NativeIntelInjectedAgentJar);
+
                 psi.ArgumentList.Add("--");
                 psi.ArgumentList.Add("--javaargs");
                 psi.ArgumentList.Add(agentOption);
@@ -283,7 +291,7 @@ public static class OldGpuCore
                 // Do not duplicate the agent through _JAVA_OPTIONS. If both
                 // mechanisms reach the game JVM, premain would run twice.
                 log("Запускаю Legacy Launcher: НАТИВНЫЙ Intel HD 2000 / OpenGL 3.1 compatibility agent.");
-                log("Java-agent передаётся через официальный Legacy Launcher --javaargs.");
+                log($"Java-agent передаётся через Legacy Launcher --javaargs: {NativeIntelInjectedAgentJar}");
                 log("CPU llvmpipe в этом режиме не используется.");
                 log($"Native log: {NativeIntelLogPath}");
             }
